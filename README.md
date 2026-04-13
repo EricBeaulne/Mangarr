@@ -62,24 +62,4 @@ Stop:
 docker compose down
 ```
 
-## Container Publishing (GitHub Actions)
-
-This repo includes `.github/workflows/publish-containers.yml` that builds and pushes one unified image:
-
-- `ghcr.io/<owner>/<repo>`
-
-Triggers:
-
-- push to `main`
-- git tags like `v*`
-- manual `workflow_dispatch`
-
-### Required GitHub Settings
-
-1. Push this repository to GitHub.
-2. In repository settings, ensure Actions has permission to write packages:
-   - `Settings` -> `Actions` -> `General` -> `Workflow permissions`
-   - enable **Read and write permissions**
-3. Package visibility/permissions can be managed in GHCR after first publish.
-
 The workflow uses `GITHUB_TOKEN`; no extra secrets are required for publishing to the same repository namespace.
