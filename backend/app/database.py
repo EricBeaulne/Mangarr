@@ -43,6 +43,19 @@ def create_tables():
     Base.metadata.create_all(bind=engine)
 
 
+def run_migrations() -> None:
+    """Apply Alembic migrations (creates or upgrades schema)."""
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+
+    backend_root = Path(__file__).resolve().parent.parent
+    alembic_ini = backend_root / "alembic.ini"
+    cfg = Config(str(alembic_ini))
+    command.upgrade(cfg, "head")
+
+
 def get_db():
     db = SessionLocal()
     try:

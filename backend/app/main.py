@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
-from app.database import create_tables
+from app.database import run_migrations
 from app.routers import series, library, search, scanner, organizer, settings as settings_router
 
 
@@ -23,8 +23,7 @@ async def lifespan(app: FastAPI):
     covers_dir = os.path.join(config.DATA_DIR, "covers")
     os.makedirs(covers_dir, exist_ok=True)
 
-    # Create all database tables
-    create_tables()
+    run_migrations()
 
     yield
     # Shutdown: nothing to clean up for MVP
