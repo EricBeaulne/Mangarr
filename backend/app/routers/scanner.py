@@ -22,6 +22,10 @@ class ScanJobResponse(BaseModel):
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
     error: Optional[str] = None
+    auto_add_status: str = "idle"
+    auto_add_total: int = 0
+    auto_add_done: int = 0
+    auto_added: int = 0
 
 
 class ManualMatchRequest(BaseModel):
@@ -56,6 +60,10 @@ def _job_to_response(job: ScanJob) -> ScanJobResponse:
         started_at=job.started_at.isoformat() if job.started_at else None,
         finished_at=job.finished_at.isoformat() if job.finished_at else None,
         error=job.error,
+        auto_add_status=job.auto_add_status,
+        auto_add_total=job.auto_add_total,
+        auto_add_done=job.auto_add_done,
+        auto_added=job.auto_added,
     )
 
 

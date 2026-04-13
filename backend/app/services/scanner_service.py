@@ -108,6 +108,11 @@ class ScanJob:
     finished_at: Optional[datetime] = None
     error: Optional[str] = None
     cancel_requested: bool = False
+    # Auto-add phase
+    auto_add_status: str = "idle"   # idle | running | complete | error
+    auto_add_total: int = 0
+    auto_add_done: int = 0
+    auto_added: int = 0
 
 
 # Module-level singleton
@@ -396,10 +401,154 @@ def _run_full_scan(root_folder_id: Optional[int] = None) -> None:
         db.close()
 
 
+AUTO_ADD_CONFIDENCE = 88   # minimum rapidfuzz score to auto-add a series
+AUTO_ADD_CONCURRENCY = 3  # max parallel MangaDex calls during auto-add
+
+
+async def _auto_add_unmatched_series(root_folder_id: Optional[int] = None) -> None:
+    """
+    Phase 2 of a scan: for every unique folder name that is still unmatched,
+    search MangaDex and auto-add any high-confidence hit.
+    """
+    global _current_job
+    from app.models.root_folder import RootFolder
+    from app.services import series_service
+
+    db: Session = SessionLocal()
+    try:
+        # Collect unique (parsed_series_title, root_folder_id) pairs from unmatched files
+        unmatched_files = (
+            db.query(ImportedFile)
+            .filter(ImportedFile.scan_state == "unmatched",
+                    ImportedFile.parsed_series_title.isnot(None))
+            .all()
+        )
+        if not unmatched_files:
+            _current_job.auto_add_status = "complete"
+            return
+
+        # Determine which root folder each file lives under
+        root_folders = db.query(RootFolder).all()
+
+        def _root_for_file(fp: str) -> Optional[int]:
+            p = Path(fp)
+            for rf in root_folders:
+                try:
+                    p.relative_to(rf.path)
+                    return rf.id
+                except ValueError:
+                    pass
+            # Fallback: first root folder
+            return root_folders[0].id if root_folders else None
+
+        # Build {folder_title: root_folder_id} — one entry per unique title
+        pending: dict[str, int] = {}
+        for f in unmatched_files:
+            title = f.parsed_series_title
+            if title and title not in pending:
+                rfid = _root_for_file(f.file_path)
+                if rfid:
+                    pending[title] = rfid
+
+        # Skip titles that are already in the library (any title match)
+        existing_series = db.query(Series).all()
+        existing_titles = set()
+        for s in existing_series:
+            existing_titles.add(s.title.lower())
+            if s.alt_titles_json:
+                try:
+                    import json
+                    for a in json.loads(s.alt_titles_json):
+                        if isinstance(a, dict):
+                            existing_titles.update(v.lower() for v in a.values())
+                except Exception:
+                    pass
+
+        # Remove titles already covered
+        pending = {
+            t: rid for t, rid in pending.items()
+            if t.lower() not in existing_titles
+        }
+
+        _current_job.auto_add_status = "running"
+        _current_job.auto_add_total = len(pending)
+        _current_job.auto_add_done = 0
+        _current_job.auto_added = 0
+
+        sem = asyncio.Semaphore(AUTO_ADD_CONCURRENCY)
+
+        async def _try_add(folder_title: str, rfid: int) -> None:
+            async with sem:
+                if _current_job.cancel_requested:
+                    return
+                try:
+                    from app.services.metadata_service import search_manga
+                    results, _ = await search_manga(folder_title, limit=5)
+                    if not results:
+                        return
+
+                    # Score each result against the folder title
+                    best_result = None
+                    best_score = 0
+                    for r in results:
+                        candidates = [r["title"]]
+                        if r.get("alt_titles_json"):
+                            try:
+                                import json
+                                for a in json.loads(r["alt_titles_json"]):
+                                    if isinstance(a, dict):
+                                        candidates.extend(a.values())
+                            except Exception:
+                                pass
+                        for c in candidates:
+                            if RAPIDFUZZ_AVAILABLE:
+                                s = fuzz.token_set_ratio(folder_title, c)
+                            else:
+                                s = 100 if folder_title.lower() == c.lower() else 0
+                            if s > best_score:
+                                best_score = s
+                                best_result = r
+
+                    if best_score < AUTO_ADD_CONFIDENCE or not best_result:
+                        return
+
+                    # Check not already in library (may have been added in parallel)
+                    fresh_db: Session = SessionLocal()
+                    try:
+                        already = fresh_db.query(Series).filter(
+                            Series.mangadex_id == best_result["id"]
+                        ).first()
+                        if already:
+                            return
+                        await series_service.add_series(
+                            fresh_db,
+                            mangadex_id=best_result["id"],
+                            root_folder_id=rfid,
+                            monitor_status="all",
+                        )
+                        _current_job.auto_added += 1
+                    finally:
+                        fresh_db.close()
+
+                except Exception:
+                    pass
+                finally:
+                    _current_job.auto_add_done += 1
+
+        await asyncio.gather(*[_try_add(t, rid) for t, rid in pending.items()])
+        _current_job.auto_add_status = "complete"
+
+    except Exception as exc:
+        _current_job.auto_add_status = "error"
+        _current_job.error = (_current_job.error or "") + f" | auto-add: {exc}"
+    finally:
+        db.close()
+
+
 async def trigger_scan(root_folder_id: Optional[int] = None) -> ScanJob:
     """
-    Start a scan in a background thread.
-    Returns the current ScanJob (status will be 'running').
+    Start a scan in a background thread, then auto-add unmatched series.
+    Returns the current ScanJob immediately (runs in background).
     """
     global _current_job
 
@@ -408,9 +557,14 @@ async def trigger_scan(root_folder_id: Optional[int] = None) -> ScanJob:
 
     _current_job = ScanJob()
 
-    loop = asyncio.get_event_loop()
-    loop.run_in_executor(None, lambda: _run_full_scan(root_folder_id))
+    async def _run_all():
+        # Phase 1: sync file scan (in thread so it doesn't block the event loop)
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, lambda: _run_full_scan(root_folder_id))
+        # Phase 2: async auto-add from MangaDex
+        await _auto_add_unmatched_series(root_folder_id)
 
+    asyncio.create_task(_run_all())
     return _current_job
 
 
