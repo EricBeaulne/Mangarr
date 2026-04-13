@@ -13,8 +13,12 @@ import {
   X,
   Save,
   BookOpen,
+  ArrowRight,
+  AlertTriangle,
+  MoveRight,
 } from 'lucide-react';
 import { seriesApi } from '../api/series';
+import type { OrganizeProposal } from '../api/series';
 import { api } from '../api/client';
 import { TopBar } from '../components/layout/TopBar';
 import { PageContainer } from '../components/layout/PageContainer';
@@ -292,6 +296,126 @@ function ChapterRow({ chapter }: ChapterRowProps) {
   );
 }
 
+// ── Organize preview modal ────────────────────────────────────────────────────
+function OrganizeModal({
+  proposals,
+  onConfirm,
+  onClose,
+  isExecuting,
+  results,
+}: {
+  proposals: OrganizeProposal[];
+  onConfirm: () => void;
+  onClose: () => void;
+  isExecuting: boolean;
+  results: OrganizeProposal[] | null;
+}) {
+  const toMove   = proposals.filter(p => p.source !== p.destination && !p.would_conflict);
+  const already  = proposals.filter(p => p.source === p.destination);
+  const conflicts = proposals.filter(p => p.would_conflict);
+
+  const basename = (p: string) => p.split(/[\\/]/).pop() ?? p;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+      <div className="bg-mangarr-card border border-mangarr-border rounded-xl w-full max-w-3xl max-h-[80vh] flex flex-col shadow-2xl">
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-mangarr-border">
+          <div>
+            <h2 className="text-mangarr-text font-semibold">Organize Files — Preview</h2>
+            <p className="text-mangarr-muted text-xs mt-0.5">
+              Review proposed renames before anything moves on disk
+            </p>
+          </div>
+          <button onClick={onClose} className="text-mangarr-muted hover:text-mangarr-text transition-colors">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Summary pills */}
+        <div className="flex gap-3 px-6 py-3 border-b border-mangarr-border text-xs">
+          <span className="flex items-center gap-1 bg-mangarr-accent/10 text-mangarr-accent px-2.5 py-1 rounded-full">
+            <MoveRight className="w-3 h-3" /> {toMove.length} will rename/move
+          </span>
+          {already.length > 0 && (
+            <span className="flex items-center gap-1 bg-mangarr-success/10 text-mangarr-success px-2.5 py-1 rounded-full">
+              <CheckCircle className="w-3 h-3" /> {already.length} already correct
+            </span>
+          )}
+          {conflicts.length > 0 && (
+            <span className="flex items-center gap-1 bg-mangarr-danger/10 text-mangarr-danger px-2.5 py-1 rounded-full">
+              <AlertTriangle className="w-3 h-3" /> {conflicts.length} conflict
+            </span>
+          )}
+        </div>
+
+        {/* File list */}
+        <div className="flex-1 overflow-y-auto px-6 py-3 space-y-2">
+          {results ? (
+            // Show results after execution
+            results.map((r) => (
+              <div key={r.file_id} className="text-xs flex items-start gap-2 py-1.5 border-b border-mangarr-border/50 last:border-0">
+                {r.error ? (
+                  <AlertTriangle className="w-3.5 h-3.5 text-mangarr-danger mt-0.5 shrink-0" />
+                ) : r.moved ? (
+                  <CheckCircle className="w-3.5 h-3.5 text-mangarr-success mt-0.5 shrink-0" />
+                ) : (
+                  <CheckCircle className="w-3.5 h-3.5 text-mangarr-muted mt-0.5 shrink-0" />
+                )}
+                <div className="min-w-0">
+                  <p className={`font-mono truncate ${r.error ? 'text-mangarr-danger' : 'text-mangarr-text'}`}>
+                    {basename(r.destination)}
+                  </p>
+                  {r.error && <p className="text-mangarr-danger mt-0.5">{r.error}</p>}
+                  {r.note && <p className="text-mangarr-muted mt-0.5">{r.note}</p>}
+                </div>
+              </div>
+            ))
+          ) : proposals.length === 0 ? (
+            <p className="text-mangarr-muted text-sm py-6 text-center">No files to organize.</p>
+          ) : (
+            proposals.map((p) => {
+              const same = p.source === p.destination;
+              return (
+                <div key={p.file_id} className={`text-xs py-2 border-b border-mangarr-border/50 last:border-0 ${same ? 'opacity-40' : ''}`}>
+                  {p.would_conflict && (
+                    <p className="text-mangarr-danger flex items-center gap-1 mb-1">
+                      <AlertTriangle className="w-3 h-3" /> Conflict — destination already exists
+                    </p>
+                  )}
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="font-mono text-mangarr-muted truncate flex-1">{basename(p.source)}</span>
+                    <ArrowRight className="w-3.5 h-3.5 text-mangarr-disabled shrink-0" />
+                    <span className={`font-mono truncate flex-1 ${p.would_conflict ? 'text-mangarr-danger' : same ? 'text-mangarr-muted' : 'text-mangarr-text'}`}>
+                      {basename(p.destination)}
+                    </span>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-mangarr-border">
+          <Button variant="ghost" onClick={onClose}>
+            {results ? 'Close' : 'Cancel'}
+          </Button>
+          {!results && toMove.length > 0 && (
+            <Button
+              onClick={onConfirm}
+              loading={isExecuting}
+              leftIcon={<FolderSync className="w-4 h-4" />}
+            >
+              Move {toMove.length} file{toMove.length !== 1 ? 's' : ''}
+            </Button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 type Tab = 'chapters' | 'files';
 
 export function SeriesDetail() {
@@ -302,6 +426,10 @@ export function SeriesDetail() {
   const [monitorEdit, setMonitorEdit] = useState(false);
   const [monitorVal, setMonitorVal] = useState<'all' | 'future' | 'none'>('all');
   const [activeTab, setActiveTab] = useState<Tab>('chapters');
+  const [organizeModal, setOrganizeModal] = useState<{
+    proposals: OrganizeProposal[];
+    results: OrganizeProposal[] | null;
+  } | null>(null);
 
   const seriesId = Number(id);
 
@@ -320,9 +448,20 @@ export function SeriesDetail() {
     onError: (err) => addToast(`Refresh failed: ${(err as Error).message}`, 'error'),
   });
 
-  const { mutate: organize, isPending: isOrganizing } = useMutation({
+  const { mutate: loadPreview, isPending: isLoadingPreview } = useMutation({
+    mutationFn: () => seriesApi.previewOrganize(seriesId),
+    onSuccess: (proposals) => setOrganizeModal({ proposals, results: null }),
+    onError: (err) => addToast(`Preview failed: ${(err as Error).message}`, 'error'),
+  });
+
+  const { mutate: executeOrganize, isPending: isOrganizing } = useMutation({
     mutationFn: () => seriesApi.organizeFiles(seriesId),
-    onSuccess: (res) => addToast(res.message || 'Files organized', 'success'),
+    onSuccess: (results) => {
+      const moved = results.filter((r) => r.moved).length;
+      setOrganizeModal((m) => m ? { ...m, results } : null);
+      queryClient.invalidateQueries({ queryKey: ['series-files', seriesId] });
+      addToast(`Organized ${moved} file${moved !== 1 ? 's' : ''}`, 'success');
+    },
     onError: (err) => addToast(`Organize failed: ${(err as Error).message}`, 'error'),
   });
 
@@ -389,6 +528,15 @@ export function SeriesDetail() {
 
   return (
     <div className="flex flex-col h-full">
+      {organizeModal && (
+        <OrganizeModal
+          proposals={organizeModal.proposals}
+          results={organizeModal.results}
+          isExecuting={isOrganizing}
+          onConfirm={() => executeOrganize()}
+          onClose={() => setOrganizeModal(null)}
+        />
+      )}
       <TopBar
         title={series.title}
         rightContent={
@@ -534,8 +682,8 @@ export function SeriesDetail() {
               <Button
                 variant="secondary"
                 size="sm"
-                loading={isOrganizing}
-                onClick={() => organize()}
+                loading={isLoadingPreview}
+                onClick={() => loadPreview()}
                 leftIcon={<FolderSync className="w-4 h-4" />}
               >
                 Organize Files

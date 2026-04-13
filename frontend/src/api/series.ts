@@ -1,6 +1,17 @@
 import { api } from './client';
 import type { Series, Volume, Chapter } from '../types';
 
+export interface OrganizeProposal {
+  file_id: number;
+  series_id: number;
+  source: string;
+  destination: string;
+  would_conflict: boolean;
+  moved?: boolean;
+  error?: string | null;
+  note?: string | null;
+}
+
 export interface SeriesListParams {
   status?: string;
   sort?: string;
@@ -52,8 +63,11 @@ export const seriesApi = {
   refreshMetadata: (id: number): Promise<Series> =>
     api.post<Series>(`/series/${id}/refresh`),
 
-  organizeFiles: (id: number): Promise<{ message: string }> =>
-    api.post<{ message: string }>(`/series/${id}/organize`),
+  previewOrganize: (id: number): Promise<OrganizeProposal[]> =>
+    api.post<OrganizeProposal[]>('/organizer/preview', { series_id: id }),
+
+  organizeFiles: (id: number): Promise<OrganizeProposal[]> =>
+    api.post<OrganizeProposal[]>(`/organizer/organize/${id}`),
 
   getChapters: (id: number): Promise<Chapter[]> =>
     api.get<Chapter[]>(`/series/${id}/chapters`),
