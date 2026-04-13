@@ -74,6 +74,27 @@ FUZZY_THRESHOLD = 80
 
 
 # ---------------------------------------------------------------------------
+# Folder / path helpers
+# ---------------------------------------------------------------------------
+
+def _get_series_folder_name(file_path: Path, root_folder_path: Path) -> Optional[str]:
+    """
+    Return the first subdirectory under root_folder as the series folder name.
+
+    /manga/Chainsaw Man/Chainsaw Man v01 (2022).cbz  →  "Chainsaw Man"
+    /manga/file.cbz                                  →  None (directly in root)
+    """
+    try:
+        relative = file_path.relative_to(root_folder_path)
+        parts = relative.parts
+        if len(parts) >= 2:          # at least one subdir + filename
+            return parts[0]
+    except ValueError:
+        pass
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Scan job state
 # ---------------------------------------------------------------------------
 @dataclass
@@ -141,21 +162,29 @@ def _collect_alt_titles(series: Series) -> List[str]:
     return [t for t in titles if t]
 
 
-def fuzzy_match_series(parsed_title: str, all_series: List[Series]) -> Optional[Series]:
+def fuzzy_match_series(
+    parsed_title: str,
+    all_series: List[Series],
+    folder_hint: Optional[str] = None,
+) -> Optional[Series]:
     """
     Find the best-matching Series using rapidfuzz.
+
+    folder_hint (the immediate subdirectory under the root folder) is checked
+    first and given a bonus — it is far more reliable than a parsed filename.
     Returns the Series if score >= FUZZY_THRESHOLD, else None.
     """
-    if not parsed_title or not all_series:
+    candidates = [t for t in [folder_hint, parsed_title] if t]
+    if not candidates or not all_series:
         return None
 
     if not RAPIDFUZZ_AVAILABLE:
-        # Fallback: simple case-insensitive substring match
-        lower = parsed_title.lower()
-        for s in all_series:
-            for title in _collect_alt_titles(s):
-                if title.lower() == lower:
-                    return s
+        for candidate in candidates:
+            lower = candidate.lower()
+            for s in all_series:
+                for title in _collect_alt_titles(s):
+                    if title.lower() == lower:
+                        return s
         return None
 
     best_series = None
@@ -163,14 +192,67 @@ def fuzzy_match_series(parsed_title: str, all_series: List[Series]) -> Optional[
 
     for series in all_series:
         for title in _collect_alt_titles(series):
-            score = fuzz.token_set_ratio(parsed_title, title)
-            if score > best_score:
-                best_score = score
-                best_series = series
+            for candidate in candidates:
+                score = fuzz.token_set_ratio(candidate, title)
+                # Give folder hint a small bonus — it's more authoritative
+                if candidate == folder_hint:
+                    score = min(100, score + 5)
+                if score > best_score:
+                    best_score = score
+                    best_series = series
 
-    if best_score >= FUZZY_THRESHOLD:
-        return best_series
-    return None
+    return best_series if best_score >= FUZZY_THRESHOLD else None
+
+
+def _try_link_chapters(
+    db: Session,
+    imported: "ImportedFile",
+    series: Series,
+    parsed: dict,
+) -> None:
+    """
+    After matching a file to a series, try to set Chapter.is_downloaded.
+
+    - Volume + chapter number  → link exact chapter
+    - Chapter number only      → link exact chapter
+    - Volume number only       → mark ALL chapters in that volume downloaded
+      (a volume CBZ contains every chapter in the volume)
+    """
+    from app.models.chapter import Chapter
+    from app.models.volume import Volume
+
+    ch_num = parsed.get("chapter")
+    vol_num = parsed.get("volume")
+
+    if ch_num:
+        chapter = (
+            db.query(Chapter)
+            .filter(Chapter.series_id == series.id, Chapter.chapter_number == ch_num)
+            .first()
+        )
+        if chapter:
+            imported.chapter_id = chapter.id
+            chapter.is_downloaded = True
+            chapter.imported_file_id = imported.id
+
+    elif vol_num:
+        # Try matching via Volume record first
+        volume = (
+            db.query(Volume)
+            .filter(Volume.series_id == series.id, Volume.volume_number == vol_num)
+            .first()
+        )
+        if volume:
+            chapters = db.query(Chapter).filter(Chapter.volume_id == volume.id).all()
+        else:
+            # Fallback: match on chapter.volume_number string
+            chapters = (
+                db.query(Chapter)
+                .filter(Chapter.series_id == series.id, Chapter.volume_number == vol_num)
+                .all()
+            )
+        for ch in chapters:
+            ch.is_downloaded = True
 
 
 # ---------------------------------------------------------------------------
@@ -182,11 +264,9 @@ def _scan_root_folder(db: Session, root_folder: RootFolder, job: ScanJob) -> Non
     if not base_path.exists():
         return
 
-    # Load all known extensions from config
     try:
         from app.config import get_settings
-        settings = get_settings()
-        extensions = set(settings.MANGA_EXTENSIONS)
+        extensions = set(get_settings().MANGA_EXTENSIONS)
     except Exception:
         extensions = MANGA_EXTENSIONS
 
@@ -195,7 +275,6 @@ def _scan_root_folder(db: Session, root_folder: RootFolder, job: ScanJob) -> Non
     for file_path in base_path.rglob("*"):
         if job.cancel_requested:
             return
-
         if not file_path.is_file():
             continue
         if file_path.suffix.lower() not in extensions:
@@ -208,36 +287,51 @@ def _scan_root_folder(db: Session, root_folder: RootFolder, job: ScanJob) -> Non
 
         parsed = parse_filename(stem)
 
-        # Check if already tracked
+        # The folder name immediately under the root is the most reliable series hint.
+        # e.g. /manga/Chainsaw Man/Chainsaw Man v01 (2022).cbz  →  "Chainsaw Man"
+        raw_folder_hint = _get_series_folder_name(file_path, base_path)
+        folder_hint = _strip_noise(raw_folder_hint) if raw_folder_hint else None
+
+        # Store the better of folder_hint / parsed series as the display title
+        display_title = folder_hint or parsed.get("series")
+
+        # ── Already tracked ──────────────────────────────────────────────────
         existing = db.query(ImportedFile).filter(ImportedFile.file_path == abs_path).first()
         if existing:
             existing.last_seen_at = datetime.now(timezone.utc)
             existing.file_size = get_file_size(file_path)
-            if existing.scan_state not in ("organized", "ignored", "matched"):
-                # Re-attempt matching
-                if parsed["series"] and existing.scan_state == "unmatched":
-                    matched_series = fuzzy_match_series(parsed["series"], all_series)
-                    if matched_series:
-                        existing.series_id = matched_series.id
-                        existing.scan_state = "matched"
-                        job.matched += 1
-                    else:
-                        job.unmatched += 1
-                else:
-                    job.matched += 1
-            else:
+
+            if existing.scan_state in ("organized", "ignored", "matched"):
                 job.matched += 1
+            elif existing.scan_state == "unmatched":
+                # Re-attempt matching now that more series may be in the library
+                matched_series = fuzzy_match_series(
+                    parsed.get("series") or "", all_series, folder_hint=folder_hint
+                )
+                if matched_series:
+                    existing.series_id = matched_series.id
+                    existing.scan_state = "matched"
+                    existing.parsed_series_title = display_title
+                    existing.parsed_chapter_number = parsed.get("chapter")
+                    existing.parsed_volume_number = parsed.get("volume")
+                    _try_link_chapters(db, existing, matched_series, parsed)
+                    job.matched += 1
+                else:
+                    # Update display title even if unmatched
+                    if display_title:
+                        existing.parsed_series_title = display_title
+                    job.unmatched += 1
+            else:
+                job.unmatched += 1
+
             job.processed_files += 1
             continue
 
-        # New file — attempt to match
-        matched_series = None
-        scan_state = "unmatched"
-
-        if parsed["series"]:
-            matched_series = fuzzy_match_series(parsed["series"], all_series)
-            if matched_series:
-                scan_state = "matched"
+        # ── New file ─────────────────────────────────────────────────────────
+        matched_series = fuzzy_match_series(
+            parsed.get("series") or "", all_series, folder_hint=folder_hint
+        )
+        scan_state = "matched" if matched_series else "unmatched"
 
         imported = ImportedFile(
             series_id=matched_series.id if matched_series else None,
@@ -245,14 +339,16 @@ def _scan_root_folder(db: Session, root_folder: RootFolder, job: ScanJob) -> Non
             file_name=file_path.name,
             file_size=get_file_size(file_path),
             extension=ext,
-            parsed_series_title=parsed["series"],
-            parsed_chapter_number=parsed["chapter"],
-            parsed_volume_number=parsed["volume"],
+            parsed_series_title=display_title,
+            parsed_chapter_number=parsed.get("chapter"),
+            parsed_volume_number=parsed.get("volume"),
             scan_state=scan_state,
         )
         db.add(imported)
+        db.flush()  # get imported.id for chapter linking
 
         if matched_series:
+            _try_link_chapters(db, imported, matched_series, parsed)
             job.matched += 1
         else:
             job.unmatched += 1
@@ -366,3 +462,83 @@ def cancel_scan() -> bool:
         return False
     _current_job.cancel_requested = True
     return True
+
+
+def rematch_for_series(db: Session, series: Series) -> int:
+    """
+    After a series is added/refreshed, scan all existing unmatched ImportedFiles
+    and retroactively link any that belong to this series.
+
+    Uses both the file's stored parsed_series_title and the parent folder name
+    (extracted from file_path) as match candidates.
+
+    Returns the number of files newly matched.
+    """
+    unmatched = (
+        db.query(ImportedFile)
+        .filter(ImportedFile.scan_state == "unmatched")
+        .all()
+    )
+    if not unmatched:
+        return 0
+
+    newly_matched = 0
+    all_titles = _collect_alt_titles(series)
+
+    def _best_score(candidate: Optional[str]) -> int:
+        if not candidate:
+            return 0
+        if not RAPIDFUZZ_AVAILABLE:
+            return 100 if any(t.lower() == candidate.lower() for t in all_titles) else 0
+        return max((fuzz.token_set_ratio(candidate, t) for t in all_titles), default=0)
+
+    for imported in unmatched:
+        # Try the stored parsed title
+        score_title = _best_score(imported.parsed_series_title)
+
+        # Try the immediate parent folder name (stripped of noise)
+        folder_hint: Optional[str] = None
+        try:
+            fp = Path(imported.file_path)
+            folder_hint = _strip_noise(fp.parent.name) or None
+        except Exception:
+            pass
+        score_folder = _best_score(folder_hint)
+
+        best = max(score_title, score_folder)
+        if best < FUZZY_THRESHOLD:
+            continue
+
+        # Re-parse file to get volume/chapter numbers if not stored
+        parsed = {
+            "series": imported.parsed_series_title,
+            "chapter": imported.parsed_chapter_number,
+            "volume": imported.parsed_volume_number,
+        }
+        if not parsed["chapter"] and not parsed["volume"]:
+            try:
+                reparsed = parse_filename(Path(imported.file_path).stem)
+                parsed["chapter"] = reparsed.get("chapter")
+                parsed["volume"] = reparsed.get("volume")
+                if not imported.parsed_series_title and reparsed.get("series"):
+                    parsed["series"] = reparsed["series"]
+            except Exception:
+                pass
+
+        # Update stored display title to whichever candidate scored better
+        if score_folder >= score_title and folder_hint:
+            imported.parsed_series_title = folder_hint
+        if parsed.get("chapter"):
+            imported.parsed_chapter_number = parsed["chapter"]
+        if parsed.get("volume"):
+            imported.parsed_volume_number = parsed["volume"]
+
+        imported.series_id = series.id
+        imported.scan_state = "matched"
+        _try_link_chapters(db, imported, series, parsed)
+        newly_matched += 1
+
+    if newly_matched:
+        db.commit()
+
+    return newly_matched

@@ -154,6 +154,13 @@ async def add_series(
         except Exception:
             pass
 
+    # Retroactively match any already-scanned files that belong to this series
+    try:
+        from app.services.scanner_service import rematch_for_series
+        rematch_for_series(db, series)
+    except Exception:
+        pass  # Non-fatal: files can be matched on next scan
+
     return series
 
 
