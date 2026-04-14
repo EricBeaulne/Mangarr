@@ -73,7 +73,9 @@ function AddSeriesModal({ result, folders, alreadyAdded, onClose, onSuccess }: A
     folders[0]?.id ?? '',
   );
   const [monitorStatus, setMonitorStatus] = useState<'all' | 'future' | 'none'>('all');
-  const [provider] = useState<'mangadex' | 'mangabaka'>((result as any).metadata_provider ?? 'mangadex');
+  const [provider] = useState<'mangadex' | 'mangabaka'>(
+    (result.metadata_provider === 'mangabaka' ? 'mangabaka' : 'mangadex'),
+  );
   const addToast = useNotificationStore((s) => s.addToast);
 
   const { mutate, isPending } = useMutation({
@@ -263,9 +265,16 @@ function SearchResultCard({
           <p className="text-mangarr-text text-sm font-medium leading-snug line-clamp-2 group-hover:text-mangarr-accent transition-colors">
             {result.title}
           </p>
-          {alreadyAdded && (
-            <CheckCircle className="w-4 h-4 text-mangarr-success shrink-0 mt-0.5" />
-          )}
+          <div className="flex items-center gap-1 shrink-0">
+            {result.metadata_provider && result.metadata_provider !== 'mangadex' && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-400 border border-amber-800/40">
+                Baka
+              </span>
+            )}
+            {alreadyAdded && (
+              <CheckCircle className="w-4 h-4 text-mangarr-success" />
+            )}
+          </div>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           {result.status && <StatusBadge status={result.status as never} size="sm" />}
@@ -300,7 +309,7 @@ function SearchResultCard({
 
 export function AddSeries() {
   const [query, setQuery] = useState('');
-  const [provider, setProvider] = useState<'mangadex' | 'mangabaka'>('mangabaka');
+  const [provider, setProvider] = useState<'auto' | 'mangadex' | 'mangabaka'>('auto');
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [selectedResult, setSelectedResult] = useState<SearchResult | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -362,9 +371,10 @@ export function AddSeries() {
             </div>
             <select
               value={provider}
-              onChange={(e) => setProvider(e.target.value as 'mangadex' | 'mangabaka')}
+              onChange={(e) => setProvider(e.target.value as 'auto' | 'mangadex' | 'mangabaka')}
               className="select-base text-sm px-3 py-3 min-w-[140px]"
             >
+              <option value="auto">Auto (Best)</option>
               <option value="mangadex">MangaDex</option>
               <option value="mangabaka">MangaBaka</option>
             </select>
@@ -382,7 +392,7 @@ export function AddSeries() {
             )}
             {results.map((result) => (
               <SearchResultCard
-                key={`${provider}-${result.mangadex_id}`}
+                key={`${result.metadata_provider ?? provider}-${result.mangadex_id}`}
                 result={result}
                 existingIds={existingIds}
                 onSelect={setSelectedResult}

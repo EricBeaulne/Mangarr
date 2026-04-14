@@ -1,3 +1,6 @@
+import asyncio
+import unicodedata
+import re
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
@@ -10,14 +13,84 @@ from app.models.series import Series
 router = APIRouter(prefix="/search", tags=["search"])
 
 
+def _cover_url_for(m: dict, provider: str) -> Optional[str]:
+    """Build a usable cover URL for a search result dict."""
+    if provider == "mangadex" and m.get("cover_filename") and m.get("id"):
+        from app.providers.mangadex import MangaDexProvider
+        return MangaDexProvider()._get_cover_url(m["id"], m["cover_filename"])
+    if provider == "mangabaka":
+        return m.get("cover_url")
+    return None
+
+
+def _normalize_title(title: str) -> str:
+    """Lowercase, strip punctuation/accents — used to deduplicate across providers."""
+    t = unicodedata.normalize("NFKD", title.lower())
+    t = re.sub(r"[^\w\s]", "", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _build_result(m: dict, provider: str) -> MangaSearchResult:
+    return MangaSearchResult(
+        id=m["id"],
+        title=m["title"],
+        alt_titles=[],
+        description=m.get("description"),
+        status=m.get("status"),
+        year=m.get("year"),
+        content_rating=m.get("content_rating"),
+        original_language=m.get("original_language"),
+        tags=[],
+        cover_url=_cover_url_for(m, provider),
+        cover_filename=m.get("cover_filename"),
+        provider=provider,
+    )
+
+
 @router.get("/manga", response_model=MangaSearchResponse)
 async def search_manga(
     q: str = Query(..., min_length=1, description="Search query"),
-    provider: str = Query("mangadex", description="Metadata provider"),
+    provider: str = Query("auto", description="Metadata provider ('mangadex', 'mangabaka', or 'auto')"),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):
-    """Search for manga by title from the specified metadata provider."""
+    """
+    Search for manga by title.
+
+    When provider='auto', searches MangaDex first (full chapter data) then
+    fills in any gaps with MangaBaka results not already found on MangaDex.
+    """
+    if provider == "auto":
+        # Search both providers in parallel
+        try:
+            (mdex_results, _), (baka_results, _) = await asyncio.gather(
+                metadata_service.search_manga(q, provider="mangadex", limit=limit, offset=offset),
+                metadata_service.search_manga(q, provider="mangabaka", limit=limit, offset=offset),
+                return_exceptions=False,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Metadata provider error: {exc}")
+
+        # Build result list: MangaDex entries first, then MangaBaka-only entries
+        seen_titles: set[str] = set()
+        manga_results: list[MangaSearchResult] = []
+
+        for m in mdex_results:
+            manga_results.append(_build_result(m, "mangadex"))
+            seen_titles.add(_normalize_title(m["title"]))
+
+        for m in baka_results:
+            if _normalize_title(m["title"]) not in seen_titles:
+                manga_results.append(_build_result(m, "mangabaka"))
+
+        return MangaSearchResponse(
+            results=manga_results,
+            total=len(manga_results),
+            limit=limit,
+            offset=offset,
+        )
+
+    # Single provider
     try:
         results, total = await metadata_service.search_manga(
             q, provider=provider, limit=limit, offset=offset
@@ -27,36 +100,8 @@ async def search_manga(
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Metadata provider error: {exc}")
 
-    manga_results = []
-    for m in results:
-        cover_url = None
-        # Build cover URL based on provider
-        if m.get("cover_filename") and m.get("id"):
-            if provider == "mangadex":
-                from app.providers.mangadex import MangaDexProvider
-                provider_instance = MangaDexProvider()
-                cover_url = provider_instance._get_cover_url(m["id"], m["cover_filename"])
-            elif provider == "mangabaka" and m.get("cover_url"):
-                cover_url = m.get("cover_url")
-
-        manga_results.append(
-            MangaSearchResult(
-                id=m["id"],
-                title=m["title"],
-                alt_titles=[],
-                description=m.get("description"),
-                status=m.get("status"),
-                year=m.get("year"),
-                content_rating=m.get("content_rating"),
-                original_language=m.get("original_language"),
-                tags=[],
-                cover_url=cover_url,
-                cover_filename=m.get("cover_filename"),
-            )
-        )
-
     return MangaSearchResponse(
-        results=manga_results,
+        results=[_build_result(m, provider) for m in results],
         total=total,
         limit=limit,
         offset=offset,

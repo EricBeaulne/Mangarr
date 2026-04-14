@@ -20,6 +20,7 @@ interface MangaSearchResultApi {
   tags: string[];
   cover_url: string | null;
   cover_filename: string | null;
+  provider?: string;
 }
 
 interface MangaSearchResponseApi {
@@ -54,6 +55,7 @@ function mapMangaSearchResult(m: MangaSearchResultApi): SearchResult {
     cover_url: m.cover_url,
     cover_filename: m.cover_filename,
     tags: m.tags ?? [],
+    metadata_provider: m.provider,
   };
 }
 

@@ -3,7 +3,7 @@ from pydantic import BaseModel
 
 
 class MangaSearchResult(BaseModel):
-    """Represents a manga result from MangaDex search."""
+    """Represents a manga result from a metadata provider search."""
     id: str
     title: str
     alt_titles: List[Dict[str, str]] = []
@@ -16,6 +16,7 @@ class MangaSearchResult(BaseModel):
     cover_url: Optional[str] = None
     cover_filename: Optional[str] = None
     in_library: bool = False
+    provider: str = "mangadex"
 
 
 class MangaSearchResponse(BaseModel):
