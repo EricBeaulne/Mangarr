@@ -90,10 +90,11 @@ def build_file_name(
         title_year = sanitized_title
 
     vol_padded = _pad_number(volume_number, 2)
-    ch_padded = _pad_number(chapter_number, 3) if chapter_number else "000"
+    has_chapter = chapter_number is not None and str(chapter_number).strip() != ""
+    ch_padded = _pad_number(chapter_number, 3) if has_chapter else "???"
 
     # Chapter decimal: keep decimals if present, else use same as padded
-    if chapter_number and "." in chapter_number:
+    if has_chapter and "." in str(chapter_number):
         ch_decimal = _pad_number(chapter_number, 3)
     else:
         ch_decimal = ch_padded
@@ -121,6 +122,11 @@ def build_file_name(
     result = re.sub(r"^\s*-\s+", "", result)
     result = re.sub(r" {2,}", " ", result)
     result = result.strip()
+
+    # Empty chapter title often leaves " - .cbz" before the extension
+    if extension:
+        ext_pat = re.escape(extension)
+        result = re.sub(rf"\s+-\s+{ext_pat}$", extension, result)
 
     return result
 

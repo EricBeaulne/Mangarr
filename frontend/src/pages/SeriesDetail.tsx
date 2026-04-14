@@ -17,6 +17,8 @@ import {
   AlertTriangle,
   MoveRight,
   ExternalLink,
+  Copy,
+  Check,
 } from 'lucide-react';
 import { seriesApi } from '../api/series';
 import type { OrganizeProposal } from '../api/series';
@@ -72,7 +74,19 @@ function FileRow({
   const [vol, setVol] = useState(file.parsed_volume_number ?? '');
   const [ch, setCh] = useState(file.parsed_chapter_number ?? '');
   const [saving, setSaving] = useState(false);
+  const [pathCopied, setPathCopied] = useState(false);
   const addToast = useNotificationStore((s) => s.addToast);
+
+  async function handleCopyPath() {
+    try {
+      await navigator.clipboard.writeText(file.file_path);
+      setPathCopied(true);
+      setTimeout(() => setPathCopied(false), 2000);
+      addToast('Full path copied', 'success');
+    } catch {
+      addToast('Could not copy path', 'error');
+    }
+  }
 
   async function handleSave() {
     setSaving(true);
@@ -106,12 +120,18 @@ function FileRow({
 
   return (
     <tr className="border-b border-mangarr-border hover:bg-mangarr-input/40 transition-colors group">
-      {/* Filename */}
-      <td className="py-2.5 px-4 text-sm max-w-xs">
-        <span className="text-mangarr-text font-mono text-xs truncate block" title={file.file_path}>
+      {/* Filename + full path */}
+      <td className="py-2.5 px-4 text-sm min-w-0 max-w-md lg:max-w-xl align-top">
+        <div className="text-mangarr-text text-sm font-medium truncate" title={file.file_name}>
           {file.file_name}
-        </span>
-        <span className="text-mangarr-disabled text-xs">{formatBytes(file.file_size)}</span>
+        </div>
+        <p
+          className="text-mangarr-muted text-[11px] font-mono break-all mt-1 leading-snug select-text"
+          title={file.file_path}
+        >
+          {file.file_path}
+        </p>
+        <span className="text-mangarr-disabled text-xs mt-0.5 inline-block">{formatBytes(file.file_size)}</span>
       </td>
 
       {/* Vol / Ch detected */}
@@ -157,7 +177,7 @@ function FileRow({
       </td>
 
       {/* Actions */}
-      <td className="py-2.5 px-4 w-24 text-right">
+      <td className="py-2.5 px-4 w-28 text-right align-top">
         {editing ? (
           <div className="flex items-center justify-end gap-1">
             <button
@@ -177,13 +197,28 @@ function FileRow({
             </button>
           </div>
         ) : (
-          <button
-            onClick={() => setEditing(true)}
-            className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-mangarr-input text-mangarr-muted hover:text-mangarr-text transition-all"
-            title="Edit mapping"
-          >
-            <Pencil className="w-3.5 h-3.5" />
-          </button>
+          <div className="flex items-center justify-end gap-0.5">
+            <button
+              type="button"
+              onClick={() => void handleCopyPath()}
+              className="p-1 rounded opacity-100 md:opacity-0 md:group-hover:opacity-100 hover:bg-mangarr-input text-mangarr-muted hover:text-mangarr-text transition-all"
+              title="Copy full path"
+            >
+              {pathCopied ? (
+                <Check className="w-3.5 h-3.5 text-mangarr-success" />
+              ) : (
+                <Copy className="w-3.5 h-3.5" />
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={() => setEditing(true)}
+              className="p-1 rounded opacity-100 md:opacity-0 md:group-hover:opacity-100 hover:bg-mangarr-input text-mangarr-muted hover:text-mangarr-text transition-all"
+              title="Edit mapping"
+            >
+              <Pencil className="w-3.5 h-3.5" />
+            </button>
+          </div>
         )}
       </td>
     </tr>
@@ -807,7 +842,9 @@ export function SeriesDetail() {
                 <table className="w-full text-left">
                   <thead>
                     <tr className="border-b border-mangarr-border bg-mangarr-input/30">
-                      <th className="py-2 px-4 text-mangarr-muted text-xs font-medium uppercase tracking-wider">Filename</th>
+                      <th className="py-2 px-4 text-mangarr-muted text-xs font-medium uppercase tracking-wider min-w-0">
+                        File
+                      </th>
                       <th className="py-2 px-4 text-mangarr-muted text-xs font-medium uppercase tracking-wider w-44">Detected Vol / Ch</th>
                       <th className="py-2 px-4 text-mangarr-muted text-xs font-medium uppercase tracking-wider hidden md:table-cell">Linked Chapter</th>
                       <th className="py-2 px-4 w-20" />
