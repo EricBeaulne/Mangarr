@@ -73,8 +73,12 @@ function AddSeriesModal({ result, folders, alreadyAdded, onClose, onSuccess }: A
     folders[0]?.id ?? '',
   );
   const [monitorStatus, setMonitorStatus] = useState<'all' | 'future' | 'none'>('all');
-  const [provider] = useState<'mangadex' | 'mangabaka'>(
-    (result.metadata_provider === 'mangabaka' ? 'mangabaka' : 'mangadex'),
+  const [provider] = useState<'mangadex' | 'mangabaka' | 'mangaupdates'>(
+    (result.metadata_provider === 'mangabaka'
+      ? 'mangabaka'
+      : result.metadata_provider === 'mangaupdates'
+        ? 'mangaupdates'
+        : 'mangadex'),
   );
   const addToast = useNotificationStore((s) => s.addToast);
 
@@ -266,9 +270,14 @@ function SearchResultCard({
             {result.title}
           </p>
           <div className="flex items-center gap-1 shrink-0">
-            {result.metadata_provider && result.metadata_provider !== 'mangadex' && (
+            {result.metadata_provider === 'mangabaka' && (
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-400 border border-amber-800/40">
                 Baka
+              </span>
+            )}
+            {result.metadata_provider === 'mangaupdates' && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-900/40 text-blue-400 border border-blue-800/40">
+                MU
               </span>
             )}
             {alreadyAdded && (
@@ -309,7 +318,7 @@ function SearchResultCard({
 
 export function AddSeries() {
   const [query, setQuery] = useState('');
-  const [provider, setProvider] = useState<'auto' | 'mangadex' | 'mangabaka'>('auto');
+  const [provider, setProvider] = useState<'auto' | 'mangadex' | 'mangabaka' | 'mangaupdates'>('auto');
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [selectedResult, setSelectedResult] = useState<SearchResult | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -371,12 +380,13 @@ export function AddSeries() {
             </div>
             <select
               value={provider}
-              onChange={(e) => setProvider(e.target.value as 'auto' | 'mangadex' | 'mangabaka')}
+              onChange={(e) => setProvider(e.target.value as 'auto' | 'mangadex' | 'mangabaka' | 'mangaupdates')}
               className="select-base text-sm px-3 py-3 min-w-[140px]"
             >
               <option value="auto">Auto (Best)</option>
               <option value="mangadex">MangaDex</option>
               <option value="mangabaka">MangaBaka</option>
+              <option value="mangaupdates">MangaUpdates</option>
             </select>
           </div>
         </div>

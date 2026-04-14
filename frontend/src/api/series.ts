@@ -20,7 +20,7 @@ export interface SeriesListParams {
 
 export interface AddSeriesPayload {
   metadata_id: string;
-  metadata_provider: 'mangadex' | 'mangabaka';
+  metadata_provider: 'mangadex' | 'mangabaka' | 'mangaupdates';
   root_folder_id: number;
   monitor_status: 'all' | 'future' | 'none';
 }

@@ -61,17 +61,28 @@ async def search_manga(
     fills in any gaps with MangaBaka results not already found on MangaDex.
     """
     if provider == "auto":
-        # Search both providers in parallel
+        # Search all three providers in parallel
         try:
-            (mdex_results, _), (baka_results, _) = await asyncio.gather(
+            results_tuple = await asyncio.gather(
                 metadata_service.search_manga(q, provider="mangadex", limit=limit, offset=offset),
                 metadata_service.search_manga(q, provider="mangabaka", limit=limit, offset=offset),
-                return_exceptions=False,
+                metadata_service.search_manga(q, provider="mangaupdates", limit=limit, offset=offset),
+                return_exceptions=True,
             )
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"Metadata provider error: {exc}")
 
-        # Build result list: MangaDex entries first, then MangaBaka-only entries
+        def _extract(res):
+            if isinstance(res, Exception):
+                return []
+            results, _ = res
+            return results
+
+        mdex_results = _extract(results_tuple[0])
+        baka_results = _extract(results_tuple[1])
+        mu_results = _extract(results_tuple[2])
+
+        # Build result list: MangaDex first, then MangaBaka-only, then MangaUpdates-only
         seen_titles: set[str] = set()
         manga_results: list[MangaSearchResult] = []
 
@@ -82,6 +93,11 @@ async def search_manga(
         for m in baka_results:
             if _normalize_title(m["title"]) not in seen_titles:
                 manga_results.append(_build_result(m, "mangabaka"))
+                seen_titles.add(_normalize_title(m["title"]))
+
+        for m in mu_results:
+            if _normalize_title(m["title"]) not in seen_titles:
+                manga_results.append(_build_result(m, "mangaupdates"))
 
         return MangaSearchResponse(
             results=manga_results,
