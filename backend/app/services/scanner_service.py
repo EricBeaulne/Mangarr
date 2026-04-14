@@ -232,14 +232,18 @@ def _try_link_chapters(
     parsed: dict,
 ) -> None:
     """
-    After matching a file to a series, set Chapter.is_downloaded.
+    After matching a file to a series, set Chapter.is_downloaded and
+    point ImportedFile.chapter_id at a representative chapter.
 
     - Chapter number (± volume)  → link that exact chapter
     - Volume number only         → mark ALL chapters in that volume downloaded
-                                   (a volume CBZ contains every chapter)
+                                   (a whole-volume CBZ contains every chapter).
+                                   If NO chapter records exist for the volume,
+                                   create a synthetic one so the file can be
+                                   tracked and progress counted.
 
     Both raw and leading-zero-normalised values are tried so that
-    filename "v01" matches MangaDex "1", "ch097" matches "97", etc.
+    filename "v01" matches metadata "1", "ch097" matches "97", etc.
     """
     from app.models.chapter import Chapter
     from app.models.volume import Volume
@@ -290,8 +294,46 @@ def _try_link_chapters(
                 )
                 .all()
             )
-        for ch in chapters:
-            ch.is_downloaded = True
+
+        if chapters:
+            # Mark every chapter in the volume downloaded; point file at the first
+            for ch in chapters:
+                ch.is_downloaded = True
+            imported.chapter_id = chapters[0].id
+        else:
+            # No metadata chapters for this volume — create a synthetic one so the
+            # file is trackable and contributes to the progress count.
+            canonical_vol = norm_vol or vol_num
+
+            # Avoid duplicate synthetics on re-scan
+            existing_synthetic = (
+                db.query(Chapter)
+                .filter(
+                    Chapter.series_id == series.id,
+                    Chapter.chapter_number.is_(None),
+                    Chapter.volume_number == canonical_vol,
+                    Chapter.metadata_provider == "synthetic",
+                )
+                .first()
+            )
+
+            if existing_synthetic:
+                rep_chapter = existing_synthetic
+            else:
+                rep_chapter = Chapter(
+                    series_id=series.id,
+                    chapter_number=None,
+                    volume_number=canonical_vol,
+                    title=f"Volume {canonical_vol}",
+                    language="en",
+                    metadata_provider="synthetic",
+                )
+                db.add(rep_chapter)
+                db.flush()
+
+            rep_chapter.is_downloaded = True
+            rep_chapter.imported_file_id = imported.id
+            imported.chapter_id = rep_chapter.id
 
 
 # ---------------------------------------------------------------------------

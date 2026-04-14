@@ -132,14 +132,18 @@ function FileRow({
     }
   }
 
+  // For volume-only files (no chapter_number in parsed), show "Vol. X (whole volume)"
+  const isVolumeFile = !file.parsed_chapter_number && !!file.parsed_volume_number;
   const linkedLabel = file.linked_chapter
-    ? [
-        file.linked_chapter.volume_number ? `Vol. ${file.linked_chapter.volume_number}` : null,
-        file.linked_chapter.chapter_number ? `Ch. ${file.linked_chapter.chapter_number}` : null,
-        file.linked_chapter.title,
-      ]
-        .filter(Boolean)
-        .join(' · ')
+    ? isVolumeFile
+      ? `Vol. ${file.linked_chapter.volume_number ?? file.parsed_volume_number} (whole volume)`
+      : [
+          file.linked_chapter.volume_number ? `Vol. ${file.linked_chapter.volume_number}` : null,
+          file.linked_chapter.chapter_number ? `Ch. ${file.linked_chapter.chapter_number}` : null,
+          file.linked_chapter.title,
+        ]
+          .filter(Boolean)
+          .join(' · ')
     : null;
 
   return (
@@ -352,7 +356,14 @@ function parseFloat2(val: string | null): number {
 }
 
 function sortChapters(chapters: Chapter[]): Chapter[] {
-  return [...chapters].sort((a, b) => parseFloat2(a.chapter_number) - parseFloat2(b.chapter_number));
+  return [...chapters].sort((a, b) => {
+    const hasCh = (c: Chapter) => c.chapter_number !== null && c.chapter_number !== undefined;
+    // Real chapters (with chapter_number) first, sorted numerically
+    if (hasCh(a) && hasCh(b)) return parseFloat2(a.chapter_number) - parseFloat2(b.chapter_number);
+    // Synthetic volume-only chapters at the end, sorted by volume
+    if (!hasCh(a) && !hasCh(b)) return parseFloat2(a.volume_number) - parseFloat2(b.volume_number);
+    return hasCh(a) ? -1 : 1;
+  });
 }
 
 function getProviderUrl(provider: string, metadataId: string): string | null {
@@ -379,11 +390,11 @@ function ChapterRow({ chapter }: ChapterRowProps) {
       }`}
     >
       <td className="py-2.5 px-4 text-mangarr-muted text-sm font-mono w-20">
-        {chapter.chapter_number ?? '—'}
+        {chapter.chapter_number ?? (chapter.volume_number ? `Vol.${chapter.volume_number}` : '—')}
       </td>
       <td className="py-2.5 px-4 text-sm">
         <span className={isDownloaded ? 'text-mangarr-text' : 'text-mangarr-muted'}>
-          {chapter.title || (chapter.chapter_number ? `Chapter ${chapter.chapter_number}` : 'Unknown')}
+          {chapter.title || (chapter.chapter_number ? `Chapter ${chapter.chapter_number}` : chapter.volume_number ? `Volume ${chapter.volume_number}` : 'Unknown')}
         </span>
       </td>
       <td className="py-2.5 px-4 text-mangarr-muted text-sm w-24 hidden md:table-cell">
