@@ -300,7 +300,7 @@ function SearchResultCard({
 
 export function AddSeries() {
   const [query, setQuery] = useState('');
-  const [provider, setProvider] = useState<'mangadex' | 'mangabaka'>('mangadex');
+  const [provider, setProvider] = useState<'mangadex' | 'mangabaka'>('mangabaka');
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [selectedResult, setSelectedResult] = useState<SearchResult | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);

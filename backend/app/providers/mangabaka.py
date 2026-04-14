@@ -11,7 +11,7 @@ from app.providers.base import MetadataProvider
 MANGABAKA_BASE_URL = "https://api.mangabaka.dev"
 USER_AGENT = "Mangarr/1.0"
 
-# Rate limiter: at most 5 concurrent requests
+# Rate limiter: at most 5 concurrent requests (API limit: 30/min search, 120/min lookup)
 _semaphore = asyncio.Semaphore(5)
 
 
@@ -19,99 +19,102 @@ class MangaBakaProvider(MetadataProvider):
     name = "mangabaka"
 
     @staticmethod
-    def _normalize_title(title: str) -> str:
-        """Normalize title from MangaBaka."""
-        if isinstance(title, dict):
-            # If title is a dict, try to extract English or first value
-            if "en" in title:
-                return title["en"]
-            return next(iter(title.values()), "Unknown")
-        return title or "Unknown"
+    def _parse_manga_data(data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Normalize a MangaBaka series object to the standard provider dict.
 
-    @staticmethod
-    def _parse_manga_data(manga_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract normalized fields from a MangaBaka manga object."""
-        # MangaBaka API structure differs from MangaDex, normalize it
-        title = manga_data.get("title", manga_data.get("name", "Unknown"))
-
+        MangaBaka series response shape (relevant fields):
+          id              int
+          title           str
+          native_title    str
+          romanized_title str
+          secondary_titles  { lang: [{ type, title, note }] }
+          description     str
+          status          str  ("releasing" | "completed" | "hiatus" | "cancelled")
+          year            int
+          content_rating  str  ("safe" | "suggestive" | "erotica" | "pornographic")
+          genres          [str]
+          cover           { raw: { url }, x350: { x1, x2, x3 }, ... }
+        """
+        # Alt titles: flatten secondary_titles into [{lang: title}, ...]
         alt_titles_list: List[Dict[str, str]] = []
-        if "alternate_titles" in manga_data:
-            for alt in manga_data.get("alternate_titles", []):
-                if isinstance(alt, str):
-                    alt_titles_list.append({"en": alt})
-                elif isinstance(alt, dict):
-                    alt_titles_list.append(alt)
+        for lang, entries in (data.get("secondary_titles") or {}).items():
+            if isinstance(entries, list):
+                for entry in entries:
+                    if isinstance(entry, dict) and "title" in entry:
+                        alt_titles_list.append({lang: entry["title"]})
 
-        # Tags/genres
-        tags = []
-        for tag in manga_data.get("genres", []):
-            if isinstance(tag, str):
-                tags.append(tag)
-            elif isinstance(tag, dict) and "name" in tag:
-                tags.append(tag["name"])
+        # Tags / genres — MangaBaka genres are plain strings
+        tags = [g for g in (data.get("genres") or []) if isinstance(g, str)]
 
-        # Cover image
+        # Cover: prefer the 350px CDN thumbnail for downloads; store raw URL as cover_url
+        cover_obj = data.get("cover") or {}
+        raw_cover_url = (cover_obj.get("raw") or {}).get("url")
+        # Use x350@1 CDN URL for downloading if available, else fall back to raw
+        cdn_350 = (cover_obj.get("x350") or {}).get("x1") or raw_cover_url
+
+        # Derive a stable filename: mangabaka_{id}.{ext}
         cover_filename = None
-        if "cover_url" in manga_data:
-            # Extract filename from URL if available
-            cover_url = manga_data["cover_url"]
-            if cover_url:
-                cover_filename = cover_url.split("/")[-1]
+        if raw_cover_url:
+            ext = raw_cover_url.rsplit(".", 1)[-1].split("?")[0] or "jpg"
+            cover_filename = f"mangabaka_{data['id']}.{ext}"
 
-        description = manga_data.get("description", manga_data.get("synopsis"))
+        # Map MangaBaka status strings to our internal values
+        status_map = {
+            "releasing": "ongoing",
+            "completed": "completed",
+            "hiatus": "hiatus",
+            "cancelled": "cancelled",
+            "on_hiatus": "hiatus",
+        }
+        raw_status = (data.get("status") or "").lower()
+        status = status_map.get(raw_status, raw_status) or None
+
+        description = data.get("description") or None
 
         return {
-            "id": manga_data.get("id"),
-            "title": title,
+            "id": str(data.get("id")),
+            "title": data.get("title") or "Unknown",
             "alt_titles_json": json.dumps(alt_titles_list),
             "description": description,
-            "status": manga_data.get("status"),
-            "year": manga_data.get("year"),
-            "content_rating": None,  # MangaBaka doesn't have content rating
-            "original_language": manga_data.get("original_language", "ja"),
+            "status": status,
+            "year": data.get("year"),
+            "content_rating": data.get("content_rating"),
+            "original_language": "ja",
             "tags_json": json.dumps(tags),
             "cover_filename": cover_filename,
-            "cover_url": manga_data.get("cover_url"),  # Store full URL for cover download
+            "cover_url": cdn_350,  # Used by download_cover
         }
 
     async def search(
         self, query: str, limit: int = 20, offset: int = 0
     ) -> Tuple[List[Dict[str, Any]], int]:
-        """Search for manga on MangaBaka."""
+        """Search MangaBaka. Uses page-based pagination (offset → page number)."""
+        page = (offset // limit) + 1
+
         async with _semaphore:
             async with httpx.AsyncClient(
                 base_url=MANGABAKA_BASE_URL,
                 headers={"User-Agent": USER_AGENT},
                 timeout=30.0,
             ) as client:
-                params = {
-                    "q": query,
-                    "limit": limit,
-                    "offset": offset,
-                }
                 try:
-                    resp = await client.get("/manga/search", params=params)
+                    resp = await client.get(
+                        "/v1/series/search",
+                        params={"q": query, "limit": limit, "page": page},
+                    )
                     resp.raise_for_status()
-                    data = resp.json()
-                except Exception as e:
-                    # If search endpoint doesn't exist, return empty results
+                    body = resp.json()
+                except Exception:
                     return [], 0
 
-        # Handle different response structures
-        if isinstance(data, dict):
-            results_list = data.get("results", data.get("data", []))
-            total = data.get("total", len(results_list))
-        elif isinstance(data, list):
-            results_list = data
-            total = len(data)
-        else:
-            return [], 0
-
-        results = [self._parse_manga_data(m) for m in results_list]
+        items = body.get("data") or []
+        total = (body.get("pagination") or {}).get("count", len(items))
+        results = [self._parse_manga_data(m) for m in items]
         return results, total
 
     async def get_manga(self, provider_id: str) -> Optional[Dict[str, Any]]:
-        """Fetch a single manga by MangaBaka ID."""
+        """Fetch a single series by MangaBaka integer ID."""
         async with _semaphore:
             async with httpx.AsyncClient(
                 base_url=MANGABAKA_BASE_URL,
@@ -119,108 +122,48 @@ class MangaBakaProvider(MetadataProvider):
                 timeout=30.0,
             ) as client:
                 try:
-                    resp = await client.get(f"/manga/{provider_id}")
+                    resp = await client.get(f"/v1/series/{provider_id}")
                     if resp.status_code == 404:
                         return None
                     resp.raise_for_status()
-                    data = resp.json()
+                    body = resp.json()
                 except Exception:
                     return None
 
-        # Handle both direct object and nested response
-        if isinstance(data, dict) and "data" in data:
-            manga_data = data["data"]
-        else:
-            manga_data = data
-
+        manga_data = body.get("data") if isinstance(body, dict) else body
         if not manga_data:
             return None
-
         return self._parse_manga_data(manga_data)
 
     async def get_chapters(
         self, provider_id: str, lang: str = "en"
     ) -> List[Dict[str, Any]]:
-        """Fetch all chapters for a manga."""
-        chapters: List[Dict[str, Any]] = []
-        offset = 0
-        page_size = 100
+        """
+        MangaBaka does not expose a per-series chapters endpoint.
+        Chapter tracking is handled entirely by the file scanner.
+        """
+        return []
 
-        async with httpx.AsyncClient(
-            base_url=MANGABAKA_BASE_URL,
-            headers={"User-Agent": USER_AGENT},
-            timeout=30.0,
-        ) as client:
-            while True:
-                try:
-                    async with _semaphore:
-                        params = {
-                            "limit": page_size,
-                            "offset": offset,
-                        }
-                        resp = await client.get(
-                            f"/manga/{provider_id}/chapters",
-                            params=params,
-                        )
-                        resp.raise_for_status()
-                        data = resp.json()
-                except Exception:
-                    break
+    async def download_cover(self, provider_id: str, cover_info: Any) -> Optional[str]:
+        """
+        Download a cover from MangaBaka CDN.
 
-                # Handle different response structures
-                if isinstance(data, dict):
-                    page_data = data.get("results", data.get("data", []))
-                elif isinstance(data, list):
-                    page_data = data
-                else:
-                    break
-
-                for ch in page_data:
-                    chapters.append(
-                        {
-                            "id": ch.get("id"),
-                            "chapter_number": ch.get("chapter_number", ch.get("chapter")),
-                            "volume_number": ch.get("volume_number"),
-                            "title": ch.get("title"),
-                            "language": lang,
-                            "pages": ch.get("pages"),
-                            "publish_at": ch.get("published_at", ch.get("publish_at")),
-                        }
-                    )
-
-                if len(page_data) < page_size:
-                    break
-                offset += page_size
-
-        return chapters
-
-    async def download_cover(
-        self, provider_id: str, cover_info: Any
-    ) -> Optional[str]:
-        """Download a cover image from MangaBaka."""
+        cover_info is the cover_url stored in the metadata dict (a CDN URL).
+        The file is saved as mangabaka_{id}.{ext} in DATA_DIR/covers/.
+        """
         if not cover_info:
             return None
+
+        url = str(cover_info)
 
         settings = get_settings()
         covers_dir = os.path.join(settings.DATA_DIR, "covers")
         os.makedirs(covers_dir, exist_ok=True)
 
-        # cover_info might be a filename or a full URL depending on how we store it
-        if cover_info.startswith("http"):
-            url = cover_info
-            # Extract filename from URL
-            save_name = cover_info.split("/")[-1].split("?")[0]
-        else:
-            # Assume it's a filename/path component
-            url = f"https://mangabaka.org/images/covers/{cover_info}"
-            save_name = cover_info.split("/")[-1]
-
-        if not save_name:
-            save_name = f"{provider_id}_cover.jpg"
-
+        ext = url.rsplit(".", 1)[-1].split("?")[0] or "jpg"
+        save_name = f"mangabaka_{provider_id}.{ext}"
         save_path = os.path.join(covers_dir, save_name)
 
-        # Don't re-download if already present
         if os.path.exists(save_path):
             return save_name
 
@@ -235,8 +178,8 @@ class MangaBakaProvider(MetadataProvider):
                     if resp.status_code == 404:
                         return None
                     resp.raise_for_status()
-                    with open(save_path, "wb") as f:
-                        f.write(resp.content)
+                    with open(save_path, "wb") as fh:
+                        fh.write(resp.content)
             return save_name
         except Exception:
             return None

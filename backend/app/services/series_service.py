@@ -230,6 +230,72 @@ async def refresh_series(db: Session, series_id: int) -> Series:
     return series
 
 
+async def migrate_series_to_provider(
+    db: Session,
+    series_id: int,
+    target_provider: str,
+    target_id: str,
+) -> Series:
+    """
+    Switch a series to a different metadata provider.
+    Updates all metadata fields and re-downloads the cover.
+    Existing chapters are preserved (only new ones would be added via upsert).
+    """
+    series = db.query(Series).filter(Series.id == series_id).first()
+    if not series:
+        raise ValueError(f"Series {series_id} not found")
+
+    manga_data = await metadata_service.get_manga(target_provider, target_id)
+    if not manga_data:
+        raise ValueError(f"Manga {target_id} not found on {target_provider}")
+
+    # Update provider identity
+    series.metadata_provider = target_provider
+    series.metadata_id = target_id
+    if target_provider == "mangadex":
+        series.mangadex_id = target_id
+    else:
+        series.mangadex_id = None
+
+    # Update metadata fields
+    series.title = manga_data["title"]
+    series.alt_titles_json = manga_data.get("alt_titles_json")
+    series.description = manga_data.get("description")
+    series.status = manga_data.get("status")
+    series.year = manga_data.get("year")
+    series.content_rating = manga_data.get("content_rating")
+    series.original_language = manga_data.get("original_language")
+    series.tags_json = manga_data.get("tags_json")
+    series.cover_filename = manga_data.get("cover_filename")
+    series.metadata_updated_at = datetime.now(timezone.utc)
+
+    # Upsert any chapters the new provider knows about (MangaBaka returns [])
+    try:
+        settings = get_settings()
+        chapters_data = await metadata_service.get_manga_chapters(
+            target_provider, target_id, lang=settings.DEFAULT_LANGUAGE
+        )
+        _upsert_chapters(db, series.id, target_provider, chapters_data)
+    except Exception:
+        pass
+
+    db.commit()
+    db.refresh(series)
+
+    # Re-download cover from new provider
+    if manga_data.get("cover_url") or manga_data.get("cover_filename"):
+        try:
+            await metadata_service.download_cover(
+                target_provider,
+                target_id,
+                manga_data.get("cover_url") or manga_data.get("cover_filename"),
+            )
+        except Exception:
+            pass
+
+    return series
+
+
 def delete_series(db: Session, series_id: int) -> bool:
     """
     Remove a series and all related records from the DB.

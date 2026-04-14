@@ -410,3 +410,132 @@ def delete_series_file(
             os.remove(file_path)
         except OSError:
             pass  # File already gone — not an error
+
+
+# ── Migration ───────────────────────────────────────────────────────────────
+
+class MigrateSeriesRequest(BaseModel):
+    target_provider: str
+    target_id: str
+
+
+class MigrateResult(BaseModel):
+    series_id: int
+    title: str
+    status: str          # "migrated" | "skipped" | "no_match" | "error"
+    new_provider: Optional[str] = None
+    new_provider_id: Optional[str] = None
+    error: Optional[str] = None
+
+
+class BulkMigrateRequest(BaseModel):
+    target_provider: str = "mangabaka"
+    series_ids: Optional[List[int]] = None  # None = all series not already on target
+
+
+@router.post("/{series_id}/migrate", response_model=MigrateResult)
+async def migrate_series(
+    series_id: int,
+    payload: MigrateSeriesRequest,
+    db: Session = Depends(get_db),
+):
+    """Migrate a single series to a different metadata provider."""
+    series = db.query(Series).filter(Series.id == series_id).first()
+    if not series:
+        raise HTTPException(status_code=404, detail="Series not found")
+
+    try:
+        updated = await series_service.migrate_series_to_provider(
+            db, series_id, payload.target_provider, payload.target_id
+        )
+        return MigrateResult(
+            series_id=updated.id,
+            title=updated.title,
+            status="migrated",
+            new_provider=updated.metadata_provider,
+            new_provider_id=updated.metadata_id,
+        )
+    except Exception as exc:
+        return MigrateResult(
+            series_id=series_id,
+            title=series.title,
+            status="error",
+            error=str(exc),
+        )
+
+
+@router.post("/bulk-migrate", response_model=List[MigrateResult])
+async def bulk_migrate_to_provider(
+    payload: BulkMigrateRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Bulk-migrate library series to a different provider.
+
+    For each series not already on the target provider, searches by title and
+    migrates if a match is found. Existing chapters are preserved.
+    """
+    from app.services import metadata_service as meta_svc
+
+    if payload.series_ids:
+        candidates = db.query(Series).filter(Series.id.in_(payload.series_ids)).all()
+    else:
+        candidates = (
+            db.query(Series)
+            .filter(Series.metadata_provider != payload.target_provider)
+            .all()
+        )
+
+    results: List[MigrateResult] = []
+
+    for series in candidates:
+        try:
+            search_results, _ = await meta_svc.search_manga(
+                series.title, provider=payload.target_provider, limit=5
+            )
+        except Exception as exc:
+            results.append(MigrateResult(
+                series_id=series.id,
+                title=series.title,
+                status="error",
+                error=f"Search failed: {exc}",
+            ))
+            continue
+
+        if not search_results:
+            results.append(MigrateResult(
+                series_id=series.id,
+                title=series.title,
+                status="no_match",
+            ))
+            continue
+
+        # Pick the best title match
+        series_title_lower = series.title.lower()
+        best = search_results[0]
+        for r in search_results:
+            if r.get("title", "").lower() == series_title_lower:
+                best = r
+                break
+
+        target_id = str(best["id"])
+        try:
+            updated = await series_service.migrate_series_to_provider(
+                db, series.id, payload.target_provider, target_id
+            )
+            results.append(MigrateResult(
+                series_id=updated.id,
+                title=updated.title,
+                status="migrated",
+                new_provider=updated.metadata_provider,
+                new_provider_id=updated.metadata_id,
+            ))
+        except Exception as exc:
+            results.append(MigrateResult(
+                series_id=series.id,
+                title=series.title,
+                status="error",
+                error=str(exc),
+            ))
+
+    return results
