@@ -20,6 +20,7 @@ import {
   Copy,
   Check,
   Trash2,
+  Code2,
 } from 'lucide-react';
 import { seriesApi } from '../api/series';
 import type { OrganizeProposal } from '../api/series';
@@ -28,6 +29,7 @@ import { TopBar } from '../components/layout/TopBar';
 import { PageContainer } from '../components/layout/PageContainer';
 import { Button } from '../components/ui/Button';
 import { StatusBadge, ContentRatingBadge, Badge } from '../components/ui/Badge';
+import { Modal } from '../components/ui/Modal';
 import { Spinner } from '../components/ui/Spinner';
 import { useNotificationStore } from '../store/notificationStore';
 import type { Chapter } from '../types';
@@ -60,6 +62,164 @@ function formatBytes(bytes: number): string {
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
 }
+
+// ── Raw metadata viewer modal ────────────────────────────────────────────────
+interface RawMetadata {
+  series_id: number;
+  title: string;
+  metadata_provider: string;
+  metadata_id: string | null;
+  mangadex_id: string | null;
+  anilist_id: number | null;
+  primary: unknown;
+  primary_error: string | null;
+  anilist: unknown;
+  anilist_error: string | null;
+}
+
+function RawMetadataModal({
+  isOpen,
+  onClose,
+  seriesId,
+  seriesTitle,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  seriesId: number;
+  seriesTitle: string;
+}) {
+  const addToast = useNotificationStore((s) => s.addToast);
+  const [tab, setTab] = useState<'primary' | 'anilist'>('primary');
+  const [copied, setCopied] = useState(false);
+
+  const { data, isLoading, error, refetch, isFetching } = useQuery({
+    queryKey: ['raw-metadata', seriesId],
+    queryFn: () => api.get<RawMetadata>(`/series/${seriesId}/raw-metadata`),
+    enabled: isOpen,
+    staleTime: 0,
+  });
+
+  const activePayload = tab === 'primary' ? data?.primary : data?.anilist;
+  const activeError = tab === 'primary' ? data?.primary_error : data?.anilist_error;
+  const payloadText = useMemo(
+    () => (activePayload ? JSON.stringify(activePayload, null, 2) : ''),
+    [activePayload],
+  );
+
+  async function handleCopy() {
+    if (!payloadText) return;
+    try {
+      await navigator.clipboard.writeText(payloadText);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+      addToast('Raw JSON copied to clipboard', 'success');
+    } catch {
+      addToast('Could not copy to clipboard', 'error');
+    }
+  }
+
+  const providerLabel = data?.metadata_provider
+    ? data.metadata_provider === 'mangadex'
+      ? 'MangaDex'
+      : data.metadata_provider === 'mangabaka'
+        ? 'MangaBaka'
+        : data.metadata_provider === 'mangaupdates'
+          ? 'MangaUpdates'
+          : data.metadata_provider
+    : 'Provider';
+
+  return (
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      title={`Raw metadata · ${seriesTitle}`}
+      size="xl"
+      className="max-w-4xl"
+    >
+      {/* Header row — IDs + refresh */}
+      <div className="flex flex-wrap items-center gap-2 mb-3 text-xs">
+        {data?.metadata_id && (
+          <Badge variant="info" size="sm">
+            {providerLabel}: {data.metadata_id}
+          </Badge>
+        )}
+        {data?.anilist_id != null && (
+          <Badge variant="muted" size="sm">AniList: {data.anilist_id}</Badge>
+        )}
+        <Button
+          variant="ghost"
+          size="sm"
+          className="ml-auto"
+          loading={isFetching}
+          onClick={() => void refetch()}
+          leftIcon={<RefreshCw className="w-3.5 h-3.5" />}
+        >
+          Refetch
+        </Button>
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => void handleCopy()}
+          disabled={!payloadText}
+          leftIcon={copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+        >
+          {copied ? 'Copied' : 'Copy JSON'}
+        </Button>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex items-center gap-1 border-b border-mangarr-border mb-3">
+        <button
+          type="button"
+          onClick={() => setTab('primary')}
+          className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${
+            tab === 'primary'
+              ? 'border-mangarr-accent text-mangarr-text'
+              : 'border-transparent text-mangarr-muted hover:text-mangarr-text'
+          }`}
+        >
+          {providerLabel}
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab('anilist')}
+          disabled={data?.anilist_id == null}
+          className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+            tab === 'anilist'
+              ? 'border-mangarr-accent text-mangarr-text'
+              : 'border-transparent text-mangarr-muted hover:text-mangarr-text'
+          }`}
+        >
+          AniList
+        </button>
+      </div>
+
+      {/* Body */}
+      {isLoading ? (
+        <div className="flex items-center justify-center py-10">
+          <Spinner />
+        </div>
+      ) : error ? (
+        <div className="bg-mangarr-danger/10 border border-mangarr-danger/30 rounded-lg p-3 text-mangarr-danger text-sm">
+          Failed to load: {(error as Error).message}
+        </div>
+      ) : activeError ? (
+        <div className="bg-mangarr-warning/10 border border-mangarr-warning/30 rounded-lg p-3 text-mangarr-warning text-sm mb-3">
+          {activeError}
+        </div>
+      ) : !activePayload ? (
+        <div className="text-mangarr-muted text-sm py-8 text-center">
+          No payload available for this provider.
+        </div>
+      ) : (
+        <pre className="bg-mangarr-input border border-mangarr-border rounded-lg p-3 text-[11px] text-mangarr-text font-mono leading-relaxed overflow-auto max-h-[60vh] whitespace-pre">
+          {payloadText}
+        </pre>
+      )}
+    </Modal>
+  );
+}
+
 
 // ── File row with inline edit ─────────────────────────────────────────────────
 function FileRow({
@@ -636,6 +796,7 @@ export function SeriesDetail() {
     proposals: OrganizeProposal[];
     results: OrganizeProposal[] | null;
   } | null>(null);
+  const [rawMetaOpen, setRawMetaOpen] = useState(false);
 
   const seriesId = Number(id);
 
@@ -782,6 +943,12 @@ export function SeriesDetail() {
           onClose={() => setOrganizeModal(null)}
         />
       )}
+      <RawMetadataModal
+        isOpen={rawMetaOpen}
+        onClose={() => setRawMetaOpen(false)}
+        seriesId={seriesId}
+        seriesTitle={series.title}
+      />
       <TopBar
         title={series.title}
         rightContent={
@@ -971,6 +1138,14 @@ export function SeriesDetail() {
                 leftIcon={<FolderSync className="w-4 h-4" />}
               >
                 Organize Files
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setRawMetaOpen(true)}
+                leftIcon={<Code2 className="w-4 h-4" />}
+              >
+                Raw Metadata
               </Button>
             </div>
           </div>

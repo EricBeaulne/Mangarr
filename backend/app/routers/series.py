@@ -585,6 +585,116 @@ def reassign_series_file(
     )
 
 
+class RawMetadataResponse(BaseModel):
+    """Raw provider API payloads — useful for debugging mismatched or missing data."""
+    series_id: int
+    title: str
+    metadata_provider: str
+    metadata_id: Optional[str] = None
+    mangadex_id: Optional[str] = None
+    anilist_id: Optional[int] = None
+    primary: Optional[Dict[str, Any]] = None
+    primary_error: Optional[str] = None
+    anilist: Optional[Dict[str, Any]] = None
+    anilist_error: Optional[str] = None
+
+
+@router.get("/{series_id}/raw-metadata", response_model=RawMetadataResponse)
+async def get_series_raw_metadata(series_id: int, db: Session = Depends(get_db)):
+    """
+    Fetch the raw (un-normalized) JSON payloads from each provider this series
+    uses. Returns the primary provider response and, if an anilist_id is set,
+    the AniList GraphQL response as well.
+    """
+    import httpx
+
+    series = db.query(Series).filter(Series.id == series_id).first()
+    if not series:
+        raise HTTPException(status_code=404, detail="Series not found")
+
+    provider = series.metadata_provider or "mangadex"
+    provider_id = series.metadata_id or series.mangadex_id
+
+    primary: Optional[Dict[str, Any]] = None
+    primary_error: Optional[str] = None
+    headers = {"User-Agent": "Mangarr/1.0"}
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0, headers=headers) as client:
+            if provider == "mangadex" and provider_id:
+                resp = await client.get(
+                    f"https://api.mangadex.org/manga/{provider_id}",
+                    params={"includes[]": ["cover_art", "author", "artist"]},
+                )
+                resp.raise_for_status()
+                primary = resp.json()
+            elif provider == "mangabaka" and provider_id:
+                resp = await client.get(f"https://api.mangabaka.dev/v1/series/{provider_id}")
+                resp.raise_for_status()
+                primary = resp.json()
+            elif provider == "mangaupdates" and provider_id:
+                resp = await client.get(f"https://api.mangaupdates.com/v1/series/{provider_id}")
+                resp.raise_for_status()
+                primary = resp.json()
+            else:
+                primary_error = f"No raw fetcher implemented for provider '{provider}' or missing id"
+    except httpx.HTTPStatusError as e:
+        primary_error = f"HTTP {e.response.status_code}: {e.response.text[:200]}"
+    except Exception as e:  # noqa: BLE001
+        primary_error = f"{type(e).__name__}: {e}"
+
+    anilist_payload: Optional[Dict[str, Any]] = None
+    anilist_error: Optional[str] = None
+    if series.anilist_id:
+        try:
+            query = """
+            query ($id: Int) {
+              Media(id: $id, type: MANGA) {
+                id
+                idMal
+                title { romaji english native }
+                synonyms
+                volumes
+                chapters
+                status
+                format
+                countryOfOrigin
+                startDate { year month day }
+                endDate { year month day }
+                averageScore
+                popularity
+                siteUrl
+                description
+                genres
+                tags { name rank }
+                staff(perPage: 5) { edges { role node { name { full } } } }
+              }
+            }
+            """
+            async with httpx.AsyncClient(timeout=15.0, headers=headers) as client:
+                resp = await client.post(
+                    "https://graphql.anilist.co",
+                    json={"query": query, "variables": {"id": series.anilist_id}},
+                )
+                resp.raise_for_status()
+                anilist_payload = resp.json()
+        except Exception as e:  # noqa: BLE001
+            anilist_error = f"{type(e).__name__}: {e}"
+
+    return RawMetadataResponse(
+        series_id=series.id,
+        title=series.title,
+        metadata_provider=provider,
+        metadata_id=series.metadata_id,
+        mangadex_id=series.mangadex_id,
+        anilist_id=series.anilist_id,
+        primary=primary,
+        primary_error=primary_error,
+        anilist=anilist_payload,
+        anilist_error=anilist_error,
+    )
+
+
 @router.delete("/{series_id}/files/{file_id}", status_code=204)
 def delete_series_file(
     series_id: int,
