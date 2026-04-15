@@ -5,6 +5,7 @@ import { AddSeries } from './pages/AddSeries';
 import { RootFolders } from './pages/RootFolders';
 import { Scanner } from './pages/Scanner';
 import { SeriesDetail } from './pages/SeriesDetail';
+import { Wanted } from './pages/Wanted';
 
 function SettingsPlaceholder() {
   return (
@@ -30,6 +31,7 @@ export default function App() {
           <Route path="/settings/folders" element={<RootFolders />} />
           <Route path="/scanner" element={<Scanner />} />
           <Route path="/series/:id" element={<SeriesDetail />} />
+          <Route path="/wanted" element={<Wanted />} />
           <Route path="/settings" element={<SettingsPlaceholder />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

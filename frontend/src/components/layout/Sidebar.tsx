@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom';
-import { BookOpen, PlusCircle, FolderOpen, Search, Settings } from 'lucide-react';
+import { BookOpen, PlusCircle, FolderOpen, Search, Settings, ListX } from 'lucide-react';
 import clsx from 'clsx';
 
 interface NavItem {
@@ -11,6 +11,7 @@ interface NavItem {
 
 const navItems: NavItem[] = [
   { to: '/', icon: <BookOpen className="w-5 h-5" />, label: 'Library', end: true },
+  { to: '/wanted', icon: <ListX className="w-5 h-5" />, label: 'Wanted' },
   { to: '/add', icon: <PlusCircle className="w-5 h-5" />, label: 'Add Series' },
   { to: '/settings/folders', icon: <FolderOpen className="w-5 h-5" />, label: 'Root Folders' },
   { to: '/scanner', icon: <Search className="w-5 h-5" />, label: 'Scanner' },

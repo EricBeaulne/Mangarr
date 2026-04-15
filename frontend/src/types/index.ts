@@ -108,3 +108,23 @@ export interface PathValidationResult {
   free_space: number | null;
   error: string | null;
 }
+
+export interface MissingChapter {
+  id: number;
+  chapter_number: string | null;
+  volume_number: string | null;
+  title: string | null;
+  publish_at: string | null;
+}
+
+export interface WantedSeriesEntry {
+  series_id: number;
+  title: string;
+  cover_filename: string | null;
+  metadata_provider: string;
+  metadata_id: string;
+  monitor_status: string;
+  total_chapters: number;
+  missing_count: number;
+  missing: MissingChapter[];
+}

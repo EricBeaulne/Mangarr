@@ -546,6 +546,7 @@ export function SeriesDetail() {
   const [monitorEdit, setMonitorEdit] = useState(false);
   const [monitorVal, setMonitorVal] = useState<'all' | 'future' | 'none'>('all');
   const [activeTab, setActiveTab] = useState<Tab>('chapters');
+  const [chapterFilter, setChapterFilter] = useState<'all' | 'missing' | 'have'>('all');
   const [organizeModal, setOrganizeModal] = useState<{
     proposals: OrganizeProposal[];
     results: OrganizeProposal[] | null;
@@ -635,6 +636,12 @@ export function SeriesDetail() {
   const chapters = series.chapters ?? series.volumes?.flatMap((v) => v.chapters) ?? [];
   const sortedChapters = sortChapters(chapters);
   const downloadedCount = chapters.filter((c) => c.is_downloaded).length;
+  const missingCount = chapters.filter((c) => !c.is_downloaded).length;
+  const visibleChapters = sortedChapters.filter((ch) => {
+    if (chapterFilter === 'missing') return !ch.is_downloaded;
+    if (chapterFilter === 'have') return ch.is_downloaded;
+    return true;
+  });
   const totalCount = chapters.length;
 
   let tags: string[] = [];
@@ -879,24 +886,64 @@ export function SeriesDetail() {
                 <p className="text-sm">No chapters found.</p>
               </div>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left">
-                  <thead>
-                    <tr className="border-b border-mangarr-border bg-mangarr-input/30">
-                      <th className="py-2 px-4 text-mangarr-muted text-xs font-medium uppercase tracking-wider">#</th>
-                      <th className="py-2 px-4 text-mangarr-muted text-xs font-medium uppercase tracking-wider">Title</th>
-                      <th className="py-2 px-4 text-mangarr-muted text-xs font-medium uppercase tracking-wider hidden md:table-cell">Volume</th>
-                      <th className="py-2 px-4 text-mangarr-muted text-xs font-medium uppercase tracking-wider hidden lg:table-cell">Published</th>
-                      <th className="py-2 px-4 text-mangarr-muted text-xs font-medium uppercase tracking-wider text-right">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {sortedChapters.map((chapter, i) => (
-                      <ChapterRow key={chapter.id} chapter={chapter} index={i} />
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <>
+                {/* Filter pills */}
+                <div className="flex items-center gap-2 px-4 py-3 border-b border-mangarr-border">
+                  {(
+                    [
+                      { key: 'all', label: 'All', count: sortedChapters.length },
+                      { key: 'missing', label: 'Missing', count: missingCount },
+                      { key: 'have', label: 'Have', count: downloadedCount },
+                    ] as const
+                  ).map(({ key, label, count }) => (
+                    <button
+                      key={key}
+                      onClick={() => setChapterFilter(key)}
+                      className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-colors border ${
+                        chapterFilter === key
+                          ? 'bg-mangarr-accent text-white border-mangarr-accent'
+                          : 'bg-mangarr-input text-mangarr-muted border-mangarr-border hover:text-mangarr-text hover:border-mangarr-muted'
+                      }`}
+                    >
+                      {label}
+                      <span
+                        className={`px-1.5 py-0.5 rounded-full text-[10px] ${
+                          chapterFilter === key
+                            ? 'bg-white/20 text-white'
+                            : 'bg-mangarr-border text-mangarr-muted'
+                        }`}
+                      >
+                        {count}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead>
+                      <tr className="border-b border-mangarr-border bg-mangarr-input/30">
+                        <th className="py-2 px-4 text-mangarr-muted text-xs font-medium uppercase tracking-wider">#</th>
+                        <th className="py-2 px-4 text-mangarr-muted text-xs font-medium uppercase tracking-wider">Title</th>
+                        <th className="py-2 px-4 text-mangarr-muted text-xs font-medium uppercase tracking-wider hidden md:table-cell">Volume</th>
+                        <th className="py-2 px-4 text-mangarr-muted text-xs font-medium uppercase tracking-wider hidden lg:table-cell">Published</th>
+                        <th className="py-2 px-4 text-mangarr-muted text-xs font-medium uppercase tracking-wider text-right">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {visibleChapters.map((chapter, i) => (
+                        <ChapterRow key={chapter.id} chapter={chapter} index={i} />
+                      ))}
+                      {visibleChapters.length === 0 && (
+                        <tr>
+                          <td colSpan={5} className="py-10 text-center text-mangarr-muted text-sm">
+                            No chapters match this filter.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </>
             )
           )}
 

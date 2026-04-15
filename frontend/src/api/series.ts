@@ -1,5 +1,5 @@
 import { api } from './client';
-import type { Series, Volume, Chapter } from '../types';
+import type { Series, Volume, Chapter, WantedSeriesEntry } from '../types';
 
 export interface OrganizeProposal {
   file_id: number;
@@ -102,4 +102,7 @@ export const seriesApi = {
 
   getChapters: (id: number): Promise<Chapter[]> =>
     api.get<Chapter[]>(`/series/${id}/chapters`),
+
+  getWanted: (): Promise<WantedSeriesEntry[]> =>
+    api.get<WantedSeriesEntry[]>('/series/wanted'),
 };

@@ -23,6 +23,28 @@ from app.services import series_service, metadata_service
 router = APIRouter(prefix="/series", tags=["series"])
 
 
+# ── Wanted / missing-chapters schemas ──────────────────────────────────────────
+
+class MissingChapter(BaseModel):
+    id: int
+    chapter_number: Optional[str] = None
+    volume_number: Optional[str] = None
+    title: Optional[str] = None
+    publish_at: Optional[str] = None
+
+
+class WantedSeriesEntry(BaseModel):
+    series_id: int
+    title: str
+    cover_filename: Optional[str] = None
+    metadata_provider: str
+    metadata_id: str
+    monitor_status: str
+    total_chapters: int
+    missing_count: int
+    missing: List[MissingChapter]
+
+
 # ── Search result schema ────────────────────────────────────────────────────
 
 class SearchResult(BaseModel):
@@ -74,6 +96,102 @@ class FileRemapRequest(BaseModel):
     """Update the volume/chapter mapping for a single file and re-link."""
     parsed_volume_number: Optional[str] = None
     parsed_chapter_number: Optional[str] = None
+
+
+@router.get("/wanted", response_model=List[WantedSeriesEntry])
+def get_wanted(db: Session = Depends(get_db)):
+    """Return all series that are being monitored and have at least one missing chapter."""
+
+    # All non-downloaded, non-synthetic chapters for monitored series
+    missing_chapters = (
+        db.query(Chapter)
+        .join(Series, Series.id == Chapter.series_id)
+        .filter(
+            Chapter.is_downloaded == False,  # noqa: E712
+            Chapter.metadata_provider != "synthetic",
+            Series.monitor_status != "none",
+        )
+        .all()
+    )
+
+    # Group by series_id
+    from collections import defaultdict
+    by_series: dict = defaultdict(list)
+    for ch in missing_chapters:
+        by_series[ch.series_id].append(ch)
+
+    if not by_series:
+        return []
+
+    # Fetch all relevant series in one query
+    series_map = {
+        s.id: s
+        for s in db.query(Series).filter(Series.id.in_(list(by_series.keys()))).all()
+    }
+
+    def _safe_float(val: Optional[str]) -> float:
+        try:
+            return float(val) if val else 0.0
+        except (ValueError, TypeError):
+            return 0.0
+
+    def _sort_missing(chapters: list) -> list:
+        with_ch = sorted(
+            [c for c in chapters if c.chapter_number],
+            key=lambda c: _safe_float(c.chapter_number),
+        )
+        vol_only = sorted(
+            [c for c in chapters if not c.chapter_number],
+            key=lambda c: _safe_float(c.volume_number),
+        )
+        return with_ch + vol_only
+
+    # Also need total chapter count per series (all chapters, not just missing)
+    total_counts = {
+        series_id: db.query(Chapter)
+        .filter(
+            Chapter.series_id == series_id,
+            Chapter.metadata_provider != "synthetic",
+        )
+        .count()
+        for series_id in by_series
+    }
+
+    entries: List[WantedSeriesEntry] = []
+    for series_id, chapters in by_series.items():
+        s = series_map.get(series_id)
+        if not s:
+            continue
+
+        sorted_missing = _sort_missing(chapters)
+        missing_items = [
+            MissingChapter(
+                id=ch.id,
+                chapter_number=ch.chapter_number,
+                volume_number=ch.volume_number,
+                title=ch.title,
+                publish_at=ch.publish_at.isoformat() if ch.publish_at else None,
+            )
+            for ch in sorted_missing
+        ]
+
+        entries.append(
+            WantedSeriesEntry(
+                series_id=s.id,
+                title=s.title,
+                cover_filename=s.cover_filename,
+                metadata_provider=s.metadata_provider,
+                metadata_id=s.metadata_id,
+                monitor_status=s.monitor_status,
+                total_chapters=total_counts.get(series_id, 0),
+                missing_count=len(missing_items),
+                missing=missing_items,
+            )
+        )
+
+    # Sort by missing_count descending
+    entries.sort(key=lambda e: e.missing_count, reverse=True)
+    return entries
 
 
 @router.get("/search", response_model=SearchResponse)
