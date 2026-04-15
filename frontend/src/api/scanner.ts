@@ -27,4 +27,18 @@ export const scannerApi = {
 
   matchFile: (payload: MatchFilePayload): Promise<ImportedFile> =>
     api.post<ImportedFile>('/scanner/match', payload),
+
+  matchBulk: (payload: BulkMatchPayload): Promise<BulkMatchResponse> =>
+    api.post<BulkMatchResponse>('/scanner/match-bulk', payload),
 };
+
+export interface BulkMatchPayload {
+  file_ids: number[];
+  series_id: number;
+}
+
+export interface BulkMatchResponse {
+  matched: number;
+  failed: number;
+  errors: string[];
+}

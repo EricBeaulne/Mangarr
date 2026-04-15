@@ -129,6 +129,37 @@ def manual_match(payload: ManualMatchRequest, db: Session = Depends(get_db)):
     return ImportedFileResponse.model_validate(imported)
 
 
+class BulkMatchRequest(BaseModel):
+    file_ids: List[int]
+    series_id: int
+
+
+class BulkMatchResponse(BaseModel):
+    matched: int
+    failed: int
+    errors: List[str] = []
+
+
+@router.post("/match-bulk", response_model=BulkMatchResponse)
+def match_bulk(payload: BulkMatchRequest, db: Session = Depends(get_db)):
+    """Assign multiple imported files to a single series."""
+    matched = 0
+    failed = 0
+    errors: List[str] = []
+    for file_id in payload.file_ids:
+        try:
+            scanner_service.manual_assign_series(
+                db,
+                imported_file_id=file_id,
+                series_id=payload.series_id,
+            )
+            matched += 1
+        except Exception as exc:
+            failed += 1
+            errors.append(f"File {file_id}: {exc}")
+    return BulkMatchResponse(matched=matched, failed=failed, errors=errors)
+
+
 @router.post("/cancel")
 def cancel_scan():
     """Request cancellation of the active scan job."""
