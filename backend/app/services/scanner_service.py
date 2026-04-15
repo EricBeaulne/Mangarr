@@ -31,6 +31,10 @@ _NOISE_RE = re.compile(r'\s*[\(\[][^\)\]]*[\)\]]')
 def _strip_noise(s: str) -> str:
     return _NOISE_RE.sub('', s).strip()
 
+def _desluggify(s: str) -> str:
+    """Turn URL slugs into natural text: 'josee-the-tiger-and-the-fish' → 'josee the tiger and the fish'"""
+    return re.sub(r"[-_]+", " ", s).strip()
+
 _PATTERNS = [
     # ── Dash-separated ────────────────────────────────────────────────────────
     # "Series - Vol.01 Ch.001"
@@ -38,9 +42,9 @@ _PATTERNS = [
         r"(?P<series>.+?)\s*[-–]\s*[Vv]ol\.?\s*(?P<vol>[\d.]+)\s*[Cc]h\.?\s*(?P<ch>[\d.]+)",
         re.IGNORECASE,
     ),
-    # "Series - Ch.001"
+    # "Series - Ch.001" or "Series - Chapter-001"
     re.compile(
-        r"(?P<series>.+?)\s*[-–]\s*[Cc]h(?:apter)?\.?\s*(?P<ch>[\d.]+)",
+        r"(?P<series>.+?)\s*[-–]\s*[Cc]h(?:apter)?\.?[-\s]*(?P<ch>[\d.]+)",
         re.IGNORECASE,
     ),
     # "Series - Vol.01"
@@ -60,9 +64,9 @@ _PATTERNS = [
         r"(?P<series>.+?)\s+[Vv](?:ol(?:ume)?\.?)?\s*(?P<vol>\d+(?:\.\d+)?)(?=\s|$|[\(\[])",
         re.IGNORECASE,
     ),
-    # "Series c001 (noise)" or "Series ch001"
+    # "Series c001 (noise)" or "Series ch001" or "Series chapter-001"
     re.compile(
-        r"(?P<series>.+?)\s+[Cc](?:h(?:apter)?\.?)?\s*(?P<ch>\d+(?:\.\d+)?)(?=\s|$|[\(\[])",
+        r"(?P<series>.+?)\s+[Cc](?:h(?:apter)?\.?)?[-\s]*(?P<ch>\d+(?:\.\d+)?)(?=\s|$|[\(\[])",
         re.IGNORECASE,
     ),
 
@@ -179,7 +183,7 @@ def fuzzy_match_series(
     first and given a bonus — it is far more reliable than a parsed filename.
     Returns the Series if score >= FUZZY_THRESHOLD, else None.
     """
-    candidates = [t for t in [folder_hint, parsed_title] if t]
+    candidates = [_desluggify(t) for t in [folder_hint, parsed_title] if t]
     if not candidates or not all_series:
         return None
 
@@ -200,7 +204,7 @@ def fuzzy_match_series(
             for candidate in candidates:
                 score = fuzz.token_set_ratio(candidate, title)
                 # Give folder hint a small bonus — it's more authoritative
-                if candidate == folder_hint:
+                if folder_hint and candidate == _desluggify(folder_hint):
                     score = min(100, score + 5)
                 if score > best_score:
                     best_score = score
@@ -271,6 +275,38 @@ def _try_link_chapters(
             imported.chapter_id = chapter.id
             chapter.is_downloaded = True
             chapter.imported_file_id = imported.id
+        else:
+            # No metadata chapter exists (e.g. MangaDex has no English chapters).
+            # Create a synthetic chapter so the file is trackable.
+            canonical_ch = norm_ch or ch_num
+
+            existing_synthetic = (
+                db.query(Chapter)
+                .filter(
+                    Chapter.series_id == series.id,
+                    Chapter.chapter_number == canonical_ch,
+                    Chapter.metadata_provider == "synthetic",
+                )
+                .first()
+            )
+
+            if existing_synthetic:
+                chapter = existing_synthetic
+            else:
+                chapter = Chapter(
+                    series_id=series.id,
+                    chapter_number=canonical_ch,
+                    volume_number=norm_vol,
+                    title=f"Chapter {canonical_ch}",
+                    language="en",
+                    metadata_provider="synthetic",
+                )
+                db.add(chapter)
+                db.flush()
+
+            chapter.is_downloaded = True
+            chapter.imported_file_id = imported.id
+            imported.chapter_id = chapter.id
 
     elif vol_num:
         # Try Volume table first (has volume_id FK)
@@ -383,6 +419,17 @@ def _scan_root_folder(db: Session, root_folder: RootFolder, job: ScanJob) -> Non
             existing.file_size = get_file_size(file_path)
 
             if existing.scan_state in ("organized", "ignored", "matched"):
+                # Re-attempt chapter linking for matched files that aren't linked yet
+                if (
+                    existing.scan_state == "matched"
+                    and existing.series_id
+                    and existing.chapter_id is None
+                ):
+                    series_obj = next(
+                        (s for s in all_series if s.id == existing.series_id), None
+                    )
+                    if series_obj:
+                        _try_link_chapters(db, existing, series_obj, parsed)
                 job.matched += 1
             elif existing.scan_state == "unmatched":
                 # Re-attempt matching now that more series may be in the library
@@ -598,11 +645,13 @@ async def _auto_add_unmatched_series(root_folder_id: Optional[int] = None) -> No
                     return
                 try:
                     from app.services.metadata_service import search_manga
-                    results, _ = await search_manga(folder_title, limit=5)
+                    search_query = _desluggify(folder_title)
+                    results, _ = await search_manga(search_query, limit=5)
                     if not results:
                         return
 
-                    # Score each result against the folder title
+                    # Score each result against the folder title (desluggified)
+                    deslugged_title = _desluggify(folder_title)
                     best_result = None
                     best_score = 0
                     for r in results:
@@ -617,9 +666,9 @@ async def _auto_add_unmatched_series(root_folder_id: Optional[int] = None) -> No
                                 pass
                         for c in candidates:
                             if RAPIDFUZZ_AVAILABLE:
-                                s = fuzz.token_set_ratio(folder_title, c)
+                                s = fuzz.token_set_ratio(deslugged_title, c)
                             else:
-                                s = 100 if folder_title.lower() == c.lower() else 0
+                                s = 100 if deslugged_title.lower() == c.lower() else 0
                             if s > best_score:
                                 best_score = s
                                 best_result = r
@@ -757,6 +806,7 @@ def rematch_for_series(db: Session, series: Series) -> int:
     def _best_score(candidate: Optional[str]) -> int:
         if not candidate:
             return 0
+        candidate = _desluggify(candidate)
         if not RAPIDFUZZ_AVAILABLE:
             return 100 if any(t.lower() == candidate.lower() for t in all_titles) else 0
         return max((fuzz.token_set_ratio(candidate, t) for t in all_titles), default=0)
