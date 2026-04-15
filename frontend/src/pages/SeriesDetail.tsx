@@ -65,13 +65,17 @@ function formatBytes(bytes: number): string {
 function FileRow({
   file,
   seriesId,
+  allSeries,
   onUpdated,
   onDeleted,
+  onReassigned,
 }: {
   file: SeriesFile;
   seriesId: number;
+  allSeries: { id: number; title: string }[];
   onUpdated: (updated: SeriesFile) => void;
   onDeleted: (fileId: number) => void;
+  onReassigned: (fileId: number) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [vol, setVol] = useState(file.parsed_volume_number ?? '');
@@ -80,7 +84,33 @@ function FileRow({
   const [pathCopied, setPathCopied] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [reassigning, setReassigning] = useState(false);
+  const [reassignOpen, setReassignOpen] = useState(false);
+  const [reassignQuery, setReassignQuery] = useState('');
   const addToast = useNotificationStore((s) => s.addToast);
+
+  async function handleReassign(newSeriesId: number) {
+    setReassigning(true);
+    try {
+      await api.post<SeriesFile>(
+        `/series/${seriesId}/files/${file.id}/reassign`,
+        { new_series_id: newSeriesId },
+      );
+      const target = allSeries.find((s) => s.id === newSeriesId);
+      addToast(`File moved to "${target?.title ?? 'series'}"`, 'success');
+      onReassigned(file.id);
+      setReassignOpen(false);
+    } catch (e) {
+      addToast(`Reassign failed: ${(e as Error).message}`, 'error');
+    } finally {
+      setReassigning(false);
+    }
+  }
+
+  const reassignCandidates = allSeries
+    .filter((s) => s.id !== seriesId)
+    .filter((s) => s.title.toLowerCase().includes(reassignQuery.toLowerCase()))
+    .slice(0, 8);
 
   async function handleCopyPath() {
     try {
@@ -257,7 +287,7 @@ function FileRow({
             </div>
           </div>
         ) : (
-          <div className="flex items-center justify-end gap-0.5">
+          <div className="relative flex items-center justify-end gap-0.5">
             <button
               type="button"
               onClick={() => void handleCopyPath()}
@@ -280,12 +310,67 @@ function FileRow({
             </button>
             <button
               type="button"
+              onClick={() => { setReassignOpen((v) => !v); setReassignQuery(''); }}
+              className="p-1 rounded opacity-100 md:opacity-0 md:group-hover:opacity-100 hover:bg-mangarr-input text-mangarr-muted hover:text-mangarr-accent transition-all"
+              title="Move file to another series"
+            >
+              <MoveRight className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
               onClick={() => setConfirmDelete(true)}
               className="p-1 rounded opacity-100 md:opacity-0 md:group-hover:opacity-100 hover:bg-red-900/40 text-mangarr-muted hover:text-red-400 transition-all"
               title="Delete file"
             >
               <Trash2 className="w-3.5 h-3.5" />
             </button>
+
+            {reassignOpen && (
+              <div className="absolute right-0 top-full mt-1 z-20 w-72 bg-mangarr-card border border-mangarr-border rounded-lg shadow-xl p-2">
+                <div className="flex items-center justify-between mb-2 px-1">
+                  <span className="text-mangarr-text text-xs font-medium">Move to series</span>
+                  <button
+                    type="button"
+                    onClick={() => setReassignOpen(false)}
+                    className="p-0.5 rounded hover:bg-mangarr-input text-mangarr-muted"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+                <input
+                  autoFocus
+                  className="input-base w-full py-1 text-xs mb-2"
+                  placeholder="Search series…"
+                  value={reassignQuery}
+                  onChange={(e) => setReassignQuery(e.target.value)}
+                />
+                <div className="max-h-56 overflow-y-auto flex flex-col gap-0.5">
+                  {reassignCandidates.length === 0 ? (
+                    <p className="text-mangarr-muted text-[11px] px-2 py-2 text-center">
+                      No matching series
+                    </p>
+                  ) : (
+                    reassignCandidates.map((s) => (
+                      <button
+                        key={s.id}
+                        type="button"
+                        disabled={reassigning}
+                        onClick={() => void handleReassign(s.id)}
+                        className="text-left text-xs px-2 py-1.5 rounded hover:bg-mangarr-input text-mangarr-text truncate disabled:opacity-50"
+                        title={s.title}
+                      >
+                        {s.title}
+                      </button>
+                    ))
+                  )}
+                </div>
+                {reassigning && (
+                  <div className="flex items-center justify-center py-1">
+                    <Spinner size="sm" />
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
       </td>
@@ -601,6 +686,17 @@ export function SeriesDetail() {
     enabled: activeTab === 'files' && !isNaN(seriesId),
   });
 
+  // All series in library — used for the per-file "move to another series" picker
+  const { data: allSeriesList } = useQuery({
+    queryKey: ['series'],
+    queryFn: () => seriesApi.list(),
+    enabled: activeTab === 'files' && !isNaN(seriesId),
+  });
+  const reassignTargets = useMemo(
+    () => (allSeriesList ?? []).map((s) => ({ id: s.id, title: s.title })),
+    [allSeriesList],
+  );
+
 
   const { mutate: updateMonitor, isPending: isUpdatingMonitor } = useMutation({
     mutationFn: (val: 'all' | 'future' | 'none') =>
@@ -674,9 +770,6 @@ export function SeriesDetail() {
   const anilistVolumeTotal = series?.anilist_volumes ?? null;
   const chapterDenominator = anilistChapterTotal ?? totalCount;
   const chapterProgressPct = chapterDenominator > 0 ? Math.round((downloadedCount / chapterDenominator) * 100) : 0;
-  const volumeProgressPct = anilistVolumeTotal && anilistVolumeTotal > 0
-    ? Math.round((ownedVolumeCount / anilistVolumeTotal) * 100)
-    : 0;
 
   return (
     <div className="flex flex-col h-full">
@@ -759,44 +852,29 @@ export function SeriesDetail() {
               </div>
             )}
 
-            {/* Progress */}
+            {/* Progress — single combined bar */}
             {totalCount > 0 && (
-              <div className="mb-4 max-w-xs space-y-2">
-                {/* Volume progress — only shown when AniList volume total is available */}
-                {anilistVolumeTotal != null && anilistVolumeTotal > 0 && (
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-mangarr-muted text-xs">
-                        Volumes: {ownedVolumeCount} / {anilistVolumeTotal}
-                        <span className="text-mangarr-disabled ml-1">(AniList)</span>
-                      </span>
-                      <span className="text-mangarr-muted text-xs">{volumeProgressPct}%</span>
-                    </div>
-                    <div className="h-1.5 bg-mangarr-border rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-mangarr-accent rounded-full transition-all duration-500"
-                        style={{ width: `${volumeProgressPct}%` }}
-                      />
-                    </div>
-                  </div>
-                )}
-                {/* Chapter progress */}
-                <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-mangarr-muted text-xs">
-                      Chapters: {downloadedCount} of {anilistChapterTotal != null ? anilistChapterTotal : totalCount}
-                      {anilistChapterTotal != null && (
-                        <span className="text-mangarr-disabled ml-1">(AniList)</span>
-                      )}
-                    </span>
-                    <span className="text-mangarr-muted text-xs">{chapterProgressPct}%</span>
-                  </div>
-                  <div className="h-1.5 bg-mangarr-border rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-mangarr-accent rounded-full transition-all duration-500"
-                      style={{ width: `${chapterProgressPct}%` }}
-                    />
-                  </div>
+              <div className="mb-4 max-w-xs">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-mangarr-muted text-xs">
+                    {anilistVolumeTotal != null && anilistVolumeTotal > 0 && (
+                      <>
+                        <span className="text-mangarr-text">{ownedVolumeCount}</span>/{anilistVolumeTotal} vol
+                        <span className="text-mangarr-disabled mx-1.5">·</span>
+                      </>
+                    )}
+                    <span className="text-mangarr-text">{downloadedCount}</span>/{anilistChapterTotal != null ? anilistChapterTotal : totalCount} ch
+                    {anilistChapterTotal != null && (
+                      <span className="text-mangarr-disabled ml-1">(AniList)</span>
+                    )}
+                  </span>
+                  <span className="text-mangarr-muted text-xs">{chapterProgressPct}%</span>
+                </div>
+                <div className="h-2 bg-mangarr-border rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-mangarr-accent rounded-full transition-all duration-500"
+                    style={{ width: `${chapterProgressPct}%` }}
+                  />
                 </div>
               </div>
             )}
@@ -1036,6 +1114,7 @@ export function SeriesDetail() {
                         key={f.id}
                         file={f}
                         seriesId={seriesId}
+                        allSeries={reassignTargets}
                         onUpdated={(updated) => {
                           queryClient.setQueryData(
                             ['series-files', seriesId],
@@ -1051,6 +1130,16 @@ export function SeriesDetail() {
                           );
                           // Invalidate series stats so downloaded count refreshes
                           void queryClient.invalidateQueries({ queryKey: ['series', seriesId] });
+                        }}
+                        onReassigned={(fileId) => {
+                          queryClient.setQueryData(
+                            ['series-files', seriesId],
+                            (old: SeriesFile[] | undefined) =>
+                              old ? old.filter((x) => x.id !== fileId) : [],
+                          );
+                          // Refresh both source and any destination series counts
+                          void queryClient.invalidateQueries({ queryKey: ['series', seriesId] });
+                          void queryClient.invalidateQueries({ queryKey: ['series'] });
                         }}
                       />
                     ))}

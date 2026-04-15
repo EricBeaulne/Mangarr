@@ -1,15 +1,12 @@
 import { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { PlusCircle, BookOpen, ArrowRightLeft, X, CheckCircle, AlertCircle, Loader } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
+import { PlusCircle, BookOpen } from 'lucide-react';
 import { seriesApi } from '../api/series';
-import { api } from '../api/client';
 import { TopBar } from '../components/layout/TopBar';
 import { PageContainer } from '../components/layout/PageContainer';
 import { SeriesGrid } from '../components/series/SeriesGrid';
 import { Button } from '../components/ui/Button';
-import { Modal } from '../components/ui/Modal';
-import { useNotificationStore } from '../store/notificationStore';
 import type { Series } from '../types';
 
 type StatusFilter = 'all' | 'ongoing' | 'completed' | 'hiatus' | 'cancelled';
@@ -46,132 +43,6 @@ function sortSeries(series: Series[], sort: SortOption): Series[] {
   }
 }
 
-interface MigrateResult {
-  series_id: number;
-  title: string;
-  status: 'migrated' | 'skipped' | 'no_match' | 'error';
-  new_provider?: string;
-  new_provider_id?: string;
-  error?: string;
-}
-
-function MigrateModal({ onClose }: { onClose: () => void }) {
-  const [running, setRunning] = useState(false);
-  const [results, setResults] = useState<MigrateResult[] | null>(null);
-  const queryClient = useQueryClient();
-  const addToast = useNotificationStore((s) => s.addToast);
-
-  async function handleMigrate() {
-    setRunning(true);
-    setResults(null);
-    try {
-      const data = await api.post<MigrateResult[]>('/series/bulk-migrate', {
-        target_provider: 'mangabaka',
-      });
-      setResults(data);
-      const migrated = data.filter((r) => r.status === 'migrated').length;
-      addToast(`Migrated ${migrated} series to MangaBaka`, 'success');
-      void queryClient.invalidateQueries({ queryKey: ['series'] });
-    } catch (e) {
-      addToast(`Migration failed: ${(e as Error).message}`, 'error');
-    } finally {
-      setRunning(false);
-    }
-  }
-
-  const migrated = results?.filter((r) => r.status === 'migrated').length ?? 0;
-  const noMatch = results?.filter((r) => r.status === 'no_match').length ?? 0;
-  const errors = results?.filter((r) => r.status === 'error').length ?? 0;
-
-  return (
-    <Modal
-      isOpen
-      title="Migrate Library to MangaBaka"
-      onClose={onClose}
-      footer={
-        results ? (
-          <Button onClick={onClose}>Close</Button>
-        ) : (
-          <div className="flex gap-2">
-            <Button variant="ghost" onClick={onClose} disabled={running}>Cancel</Button>
-            <Button onClick={() => void handleMigrate()} disabled={running}>
-              {running ? 'Migrating…' : 'Migrate All'}
-            </Button>
-          </div>
-        )
-      }
-    >
-      {!results && !running && (
-        <div className="space-y-3 text-sm text-mangarr-muted">
-          <p>
-            This will search MangaBaka for every series currently sourced from MangaDex and
-            switch them over automatically.
-          </p>
-          <ul className="list-disc pl-5 space-y-1">
-            <li>Series metadata (cover, description, tags) will be updated from MangaBaka.</li>
-            <li>Existing chapter records and file links are preserved.</li>
-            <li>MangaBaka does not expose individual chapters — chapter tracking stays
-                file-based after migration.</li>
-            <li>Series with no MangaBaka match will be skipped.</li>
-          </ul>
-        </div>
-      )}
-
-      {running && (
-        <div className="flex items-center gap-3 py-6 justify-center text-mangarr-muted">
-          <Loader className="w-5 h-5 animate-spin" />
-          <span>Searching and migrating… this may take a minute.</span>
-        </div>
-      )}
-
-      {results && (
-        <div className="space-y-3">
-          {/* Summary */}
-          <div className="flex gap-4 text-sm">
-            <span className="text-mangarr-success flex items-center gap-1">
-              <CheckCircle className="w-4 h-4" /> {migrated} migrated
-            </span>
-            {noMatch > 0 && (
-              <span className="text-mangarr-muted flex items-center gap-1">
-                <X className="w-4 h-4" /> {noMatch} no match
-              </span>
-            )}
-            {errors > 0 && (
-              <span className="text-mangarr-danger flex items-center gap-1">
-                <AlertCircle className="w-4 h-4" /> {errors} errors
-              </span>
-            )}
-          </div>
-
-          {/* Row list */}
-          <div className="max-h-64 overflow-y-auto space-y-1">
-            {results.map((r) => (
-              <div
-                key={r.series_id}
-                className="flex items-center gap-2 text-xs py-1 border-b border-mangarr-border/40"
-              >
-                {r.status === 'migrated' && <CheckCircle className="w-3.5 h-3.5 text-mangarr-success shrink-0" />}
-                {r.status === 'no_match' && <X className="w-3.5 h-3.5 text-mangarr-muted shrink-0" />}
-                {r.status === 'error' && <AlertCircle className="w-3.5 h-3.5 text-mangarr-danger shrink-0" />}
-                <span className="flex-1 truncate text-mangarr-text">{r.title}</span>
-                {r.status === 'error' && (
-                  <span className="text-mangarr-danger truncate max-w-[200px]">{r.error}</span>
-                )}
-                {r.status === 'no_match' && (
-                  <span className="text-mangarr-disabled">not found</span>
-                )}
-                {r.status === 'migrated' && r.new_provider_id && (
-                  <span className="text-mangarr-muted font-mono">#{r.new_provider_id}</span>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </Modal>
-  );
-}
-
 function EmptyState() {
   const navigate = useNavigate();
   return (
@@ -196,15 +67,12 @@ function EmptyState() {
 export function Library() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [sort, setSort] = useState<SortOption>('title_asc');
-  const [showMigrate, setShowMigrate] = useState(false);
   const navigate = useNavigate();
 
   const { data: allSeries = [], isLoading, error } = useQuery({
     queryKey: ['series'],
     queryFn: () => seriesApi.list(),
   });
-
-  const hasMangadexSeries = allSeries.some((s) => s.metadata_provider === 'mangadex');
 
   const filtered = useMemo(() => {
     const byStatus =
@@ -219,25 +87,13 @@ export function Library() {
       <TopBar
         title="Library"
         rightContent={
-          <div className="flex items-center gap-2">
-            {hasMangadexSeries && (
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => setShowMigrate(true)}
-                leftIcon={<ArrowRightLeft className="w-4 h-4" />}
-              >
-                Migrate to MangaBaka
-              </Button>
-            )}
-            <Button
-              size="sm"
-              onClick={() => navigate('/add')}
-              leftIcon={<PlusCircle className="w-4 h-4" />}
-            >
-              Add Series
-            </Button>
-          </div>
+          <Button
+            size="sm"
+            onClick={() => navigate('/add')}
+            leftIcon={<PlusCircle className="w-4 h-4" />}
+          >
+            Add Series
+          </Button>
         }
       />
       <PageContainer>
@@ -298,8 +154,6 @@ export function Library() {
           emptyState={<EmptyState />}
         />
       </PageContainer>
-
-      {showMigrate && <MigrateModal onClose={() => setShowMigrate(false)} />}
     </div>
   );
 }

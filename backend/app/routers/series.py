@@ -509,6 +509,82 @@ def remap_series_file(
     )
 
 
+class FileReassignRequest(BaseModel):
+    new_series_id: int
+
+
+@router.post("/{series_id}/files/{file_id}/reassign", response_model=SeriesFileResponse)
+def reassign_series_file(
+    series_id: int,
+    file_id: int,
+    payload: FileReassignRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Move a tracked file from its current series to a different series.
+    Unlinks any chapter from the old series and re-runs chapter linking
+    against the new series.
+    """
+    f = db.query(ImportedFile).filter(
+        ImportedFile.id == file_id,
+        ImportedFile.series_id == series_id,
+    ).first()
+    if not f:
+        raise HTTPException(status_code=404, detail="File not found in this series")
+
+    new_series = db.query(Series).filter(Series.id == payload.new_series_id).first()
+    if not new_series:
+        raise HTTPException(status_code=404, detail="Target series not found")
+
+    # Clear old chapter link — the old chapter shouldn't stay marked as downloaded
+    if f.chapter_id:
+        old_ch = db.query(Chapter).filter(Chapter.id == f.chapter_id).first()
+        if old_ch:
+            old_ch.is_downloaded = False
+            old_ch.imported_file_id = None
+        f.chapter_id = None
+
+    # Move the file to the new series
+    f.series_id = new_series.id
+    f.scan_state = "matched"
+    db.flush()
+
+    # Re-run chapter linking against the new series
+    from app.services.scanner_service import _try_link_chapters
+    _try_link_chapters(db, f, new_series, {
+        "volume": f.parsed_volume_number,
+        "chapter": f.parsed_chapter_number,
+    })
+
+    db.commit()
+    db.refresh(f)
+
+    linked = None
+    if f.chapter_id:
+        ch = db.query(Chapter).filter(Chapter.id == f.chapter_id).first()
+        if ch:
+            linked = LinkedChapter(
+                id=ch.id,
+                chapter_number=ch.chapter_number,
+                volume_number=ch.volume_number,
+                title=ch.title,
+            )
+
+    return SeriesFileResponse(
+        id=f.id,
+        file_name=f.file_name,
+        file_path=f.file_path,
+        file_size=f.file_size,
+        extension=f.extension,
+        parsed_series_title=f.parsed_series_title,
+        parsed_volume_number=f.parsed_volume_number,
+        parsed_chapter_number=f.parsed_chapter_number,
+        scan_state=f.scan_state,
+        chapter_id=f.chapter_id,
+        linked_chapter=linked,
+    )
+
+
 @router.delete("/{series_id}/files/{file_id}", status_code=204)
 def delete_series_file(
     series_id: int,

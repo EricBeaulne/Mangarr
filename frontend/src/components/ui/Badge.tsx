@@ -10,11 +10,11 @@ interface BadgeProps {
 
 const variantClasses: Record<NonNullable<BadgeProps['variant']>, string> = {
   default: 'bg-mangarr-input text-mangarr-text border-mangarr-border',
-  success: 'bg-mangarr-success/20 text-mangarr-success border-mangarr-success/30',
-  warning: 'bg-mangarr-warning/20 text-mangarr-warning border-mangarr-warning/30',
-  danger: 'bg-mangarr-danger/20 text-mangarr-danger border-mangarr-danger/30',
-  info: 'bg-mangarr-accent/20 text-mangarr-accent border-mangarr-accent/30',
-  muted: 'bg-mangarr-input/50 text-mangarr-muted border-mangarr-border/50',
+  success: 'bg-mangarr-success/90 text-white border-mangarr-success',
+  warning: 'bg-mangarr-warning/90 text-black border-mangarr-warning',
+  danger: 'bg-mangarr-danger/90 text-white border-mangarr-danger',
+  info: 'bg-mangarr-accent/90 text-white border-mangarr-accent',
+  muted: 'bg-mangarr-card/90 text-mangarr-text border-mangarr-border',
 };
 
 const sizeClasses: Record<NonNullable<BadgeProps['size']>, string> = {
