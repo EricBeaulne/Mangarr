@@ -810,18 +810,9 @@ export function SeriesDetail() {
     mutationFn: () => seriesApi.refreshMetadata(seriesId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['series', seriesId] });
-      addToast('Metadata refreshed', 'success');
+      addToast('Metadata refreshed (provider + AniList)', 'success');
     },
     onError: (err) => addToast(`Refresh failed: ${(err as Error).message}`, 'error'),
-  });
-
-  const { mutate: refreshAnilist, isPending: isRefreshingAnilist } = useMutation({
-    mutationFn: () => api.post<{ anilist_id: number | null; anilist_volumes: number | null; anilist_chapters: number | null }>(`/series/${seriesId}/refresh-anilist`, {}),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['series', seriesId] });
-      addToast('AniList data updated', 'success');
-    },
-    onError: () => addToast('No AniList match found', 'error'),
   });
 
   const { mutate: loadPreview, isPending: isLoadingPreview } = useMutation({
@@ -1118,17 +1109,9 @@ export function SeriesDetail() {
                 loading={isRefreshing}
                 onClick={() => refreshMeta()}
                 leftIcon={<RefreshCw className="w-4 h-4" />}
+                title="Re-fetch metadata, chapters, and AniList totals"
               >
                 Refresh Metadata
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                loading={isRefreshingAnilist}
-                onClick={() => refreshAnilist()}
-                leftIcon={<RefreshCw className="w-4 h-4" />}
-              >
-                Refresh AniList
               </Button>
               <Button
                 variant="secondary"

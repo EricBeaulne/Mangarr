@@ -230,10 +230,16 @@ async def refresh_series(db: Session, series_id: int) -> Series:
     db.commit()
     db.refresh(series)
 
-    # AniList supplementary refresh — best-effort
+    # AniList supplementary refresh — best-effort.
+    # If we already have an anilist_id, fetch by ID (stable match).
+    # Otherwise fall back to a title search.
     try:
-        from app.providers.anilist import search_anilist
-        anilist_data = await search_anilist(series.title)
+        from app.providers.anilist import search_anilist, get_anilist_by_id
+        anilist_data = None
+        if series.anilist_id:
+            anilist_data = await get_anilist_by_id(series.anilist_id)
+        if not anilist_data:
+            anilist_data = await search_anilist(series.title)
         if anilist_data:
             series.anilist_id = anilist_data.get("id")
             series.anilist_volumes = anilist_data.get("volumes")
